@@ -275,6 +275,7 @@ export default function CoupleDashboard() {
   const [accessState, setAccessState] = useState<"checking" | "ready" | "invalid">("checking");
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [range, setRange] = useState<RangeDays>(30);
   const [focus, setFocus] = useState<"mine" | "partner">("mine");
@@ -311,7 +312,10 @@ export default function CoupleDashboard() {
   }, []);
 
   const loadData = useCallback(async (currentToken: string, quiet = false) => {
-    if (!quiet) setLoading(true);
+    if (!quiet) {
+      setLoading(true);
+      setLoadError(null);
+    }
     try {
       const response = await trackerRequest(currentToken, "GET");
       if (response.status === 401) {
@@ -323,9 +327,14 @@ export default function CoupleDashboard() {
       const payload = response.data as unknown as DashboardData & { error?: string };
       if (response.status < 200 || response.status >= 300) throw new Error(payload.error || "同步失败");
       setData(payload);
+      setLoadError(null);
       setAccessState("ready");
     } catch (error) {
-      if (!quiet) showToast(error instanceof Error ? error.message : "同步失败，请重试");
+      if (!quiet) {
+        const message = error instanceof Error ? error.message : "同步失败，请重试";
+        setLoadError(message);
+        showToast(message);
+      }
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -448,6 +457,25 @@ export default function CoupleDashboard() {
           <p className="eyebrow">秘密小农场</p>
           <h1>这里是鸡包蛋和拉粑臭的小日常</h1>
           <p>需要从属于你的专属入口进入。请让对方把那条链接重新发给你，不用注册账号。</p>
+          <div className="access-farm">
+            <img src="/farm-strip.webp" alt="温馨的像素农场" width={1536} height={512} />
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!loading && !data && loadError) {
+    return (
+      <main className="access-page" role="alert">
+        <section className="access-card pixel-panel">
+          <div className="connection-scarecrow" aria-hidden="true">🐥</div>
+          <p className="eyebrow">小农场打了个盹</p>
+          <h1>这次没有连上云端</h1>
+          <p>{loadError}</p>
+          <button className="retry-button" type="button" onClick={() => token && loadData(token)}>
+            重新连接
+          </button>
           <div className="access-farm">
             <img src="/farm-strip.webp" alt="温馨的像素农场" width={1536} height={512} />
           </div>

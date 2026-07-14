@@ -13,6 +13,23 @@ registerFunctions(cloudbase);
 
 const root = createRoot(document.getElementById("root")!);
 const envId = import.meta.env.VITE_CLOUDBASE_ENV_ID?.trim();
+const REQUEST_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(operation: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), REQUEST_TIMEOUT_MS);
+    operation.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 if (!envId) {
   root.render(
@@ -26,21 +43,39 @@ if (!envId) {
     </main>,
   );
 } else {
-  const app = cloudbase.init({ env: envId });
+  const app = cloudbase.init({
+    env: envId,
+    region: "ap-shanghai",
+    endPointMode: "CLOUD_API",
+  });
   const appWithAuth = app as unknown as {
     auth: (() => { signInAnonymously: () => Promise<unknown> }) | { signInAnonymously: () => Promise<unknown> };
     callFunction: (input: { name: string; data: Record<string, unknown> }) => Promise<{ result?: unknown }>;
   };
   const auth = typeof appWithAuth.auth === "function" ? appWithAuth.auth() : appWithAuth.auth;
-  const ready = auth.signInAnonymously();
+  let ready: Promise<unknown> | null = null;
+
+  const ensureAuth = () => {
+    if (!ready) {
+      const attempt = Promise.resolve().then(() => auth.signInAnonymously());
+      ready = withTimeout(attempt, "匿名登录超时").catch((error) => {
+        ready = null;
+        throw error;
+      });
+    }
+    return ready;
+  };
 
   window.__COUPLE_TRACKER_REQUEST__ = async ({ token, method, payload }) => {
     try {
-      await ready;
-      const response = await appWithAuth.callFunction({
-        name: "couple-tracker",
-        data: { token, method, payload: payload ?? {} },
-      });
+      await ensureAuth();
+      const response = await withTimeout(
+        appWithAuth.callFunction({
+          name: "couple-tracker",
+          data: { token, method, payload: payload ?? {} },
+        }),
+        "云端同步超时",
+      );
       const result = response.result;
       if (!result || typeof result !== "object") {
         return { status: 500, data: { error: "云端没有返回有效数据，请稍后重试。" } };
@@ -52,7 +87,7 @@ if (!envId) {
       };
     } catch (error) {
       console.error("CloudBase request failed", error);
-      return { status: 503, data: { error: "腾讯云暂时没有连接成功，请稍后重试。" } };
+      return { status: 503, data: { error: "小农场暂时没有连接成功，请点“重新连接”再试。" } };
     }
   };
 
