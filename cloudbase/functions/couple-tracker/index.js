@@ -7,6 +7,10 @@ const app = cloudbase.init({ env: cloudbase.SYMBOL_CURRENT_ENV });
 const db = app.database();
 const command = db.command;
 const DAY = 24 * 60 * 60 * 1000;
+const TOKEN_HASHES = {
+  chicken: "fee4133dba50c42a91ab8bcd2fae956e5032a6e27a5f7651415f6df8b954ee94",
+  poopy: "cb1de09ea7fce667d7d512393057f5163bdb012d8cdaf2b8890f0c563424df6f",
+};
 
 const members = {
   chicken: {
@@ -64,10 +68,25 @@ function tokenMatches(actual, expected) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+function tokenHashMatches(actual, expectedHash) {
+  if (!actual || !expectedHash) return false;
+  const actualHash = crypto.createHash("sha256").update(String(actual)).digest();
+  const expected = Buffer.from(expectedHash, "hex");
+  return actualHash.length === expected.length && crypto.timingSafeEqual(actualHash, expected);
+}
+
 function authorize(event, context) {
   const token = typeof event.token === "string" ? event.token : "";
-  if (tokenMatches(token, getEnvironment(context, "CHICKEN_TOKEN"))) return "chicken";
-  if (tokenMatches(token, getEnvironment(context, "POOPY_TOKEN"))) return "poopy";
+  const chickenToken = getEnvironment(context, "CHICKEN_TOKEN");
+  const poopyToken = getEnvironment(context, "POOPY_TOKEN");
+  if (
+    tokenMatches(token, chickenToken) ||
+    (!chickenToken && tokenHashMatches(token, TOKEN_HASHES.chicken))
+  ) return "chicken";
+  if (
+    tokenMatches(token, poopyToken) ||
+    (!poopyToken && tokenHashMatches(token, TOKEN_HASHES.poopy))
+  ) return "poopy";
   return null;
 }
 
