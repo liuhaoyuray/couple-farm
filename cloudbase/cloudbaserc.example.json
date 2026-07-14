@@ -1,0 +1,15 @@
+{
+  "version": "2.0",
+  "envId": "replace-with-your-cloudbase-environment-id",
+  "functionRoot": "./cloudbase/functions",
+  "functions": [
+    {
+      "name": "couple-tracker",
+      "dir": "./cloudbase/functions/couple-tracker",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "timeout": 15,
+      "memorySize": 256
+    }
+  ]
+}

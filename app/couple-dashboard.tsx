@@ -1,6 +1,7 @@
 "use client";
 
-import Image from "next/image";
+/* eslint-disable @next/next/no-img-element -- native images keep this shared UI portable across Next.js and CloudBase Vite builds. */
+
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type MemberId = "chicken" | "poopy";
@@ -16,7 +17,7 @@ type Profile = {
 };
 
 type WeightEntry = {
-  id: number;
+  id: number | string;
   member: MemberId;
   weightKg: number;
   recordedAt: number;
@@ -24,14 +25,14 @@ type WeightEntry = {
 };
 
 type PoopEntry = {
-  id: number;
+  id: number | string;
   member: MemberId;
   occurredAt: number;
   createdAt: number;
 };
 
 type Reaction = {
-  id: number;
+  id: number | string;
   fromMember: MemberId;
   toMember: MemberId;
   kind: "like" | "tease";
@@ -50,6 +51,45 @@ type DashboardData = {
 
 const TOKEN_KEY = "our-little-farm-access";
 const DAY = 24 * 60 * 60 * 1000;
+
+type TrackerBridgeResult = {
+  status: number;
+  data: Record<string, unknown>;
+};
+
+declare global {
+  interface Window {
+    __COUPLE_TRACKER_REQUEST__?: (input: {
+      token: string;
+      method: "GET" | "POST";
+      payload?: Record<string, unknown>;
+    }) => Promise<TrackerBridgeResult>;
+  }
+}
+
+async function trackerRequest(
+  token: string,
+  method: "GET" | "POST",
+  payload?: Record<string, unknown>,
+): Promise<TrackerBridgeResult> {
+  if (window.__COUPLE_TRACKER_REQUEST__) {
+    return window.__COUPLE_TRACKER_REQUEST__({ token, method, payload });
+  }
+
+  const response = await fetch("/api/tracker", {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+    },
+    body: method === "POST" ? JSON.stringify(payload ?? {}) : undefined,
+    cache: "no-store",
+  });
+  return {
+    status: response.status,
+    data: (await response.json()) as Record<string, unknown>,
+  };
+}
 
 function toInputDateTime(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -225,7 +265,7 @@ function WeightChart({
 function Avatar({ profile, size = 56 }: { profile: Profile; size?: number }) {
   return (
     <span className="avatar-frame" style={{ width: size, height: size, background: profile.pale }}>
-      <Image src={profile.avatar} alt={`${profile.name}的像素头像`} width={size} height={size} priority={size > 70} unoptimized />
+      <img src={profile.avatar} alt={`${profile.name}的像素头像`} width={size} height={size} />
     </span>
   );
 }
@@ -273,18 +313,15 @@ export default function CoupleDashboard() {
   const loadData = useCallback(async (currentToken: string, quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const response = await fetch("/api/tracker", {
-        headers: { Authorization: `Bearer ${currentToken}` },
-        cache: "no-store",
-      });
+      const response = await trackerRequest(currentToken, "GET");
       if (response.status === 401) {
         window.localStorage.removeItem(TOKEN_KEY);
         setAccessState("invalid");
         setData(null);
         return;
       }
-      const payload = (await response.json()) as DashboardData & { error?: string };
-      if (!response.ok) throw new Error(payload.error || "同步失败");
+      const payload = response.data as unknown as DashboardData & { error?: string };
+      if (response.status < 200 || response.status >= 300) throw new Error(payload.error || "同步失败");
       setData(payload);
       setAccessState("ready");
     } catch (error) {
@@ -319,16 +356,9 @@ export default function CoupleDashboard() {
     if (saving) return false;
     setSaving(true);
     try {
-      const response = await fetch("/api/tracker", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-      const result = (await response.json()) as { error?: string; reaction?: Reaction };
-      if (!response.ok) throw new Error(result.error || "保存失败");
+      const response = await trackerRequest(token, "POST", payload);
+      const result = response.data as { error?: string; reaction?: Reaction };
+      if (response.status < 200 || response.status >= 300) throw new Error(result.error || "保存失败");
       await loadData(token, true);
       showToast(result.reaction?.message || fallbackMessage);
       return true;
@@ -404,7 +434,7 @@ export default function CoupleDashboard() {
     await saveRecord();
   }
 
-  async function removeEntry(kind: "weight" | "poop", id: number) {
+  async function removeEntry(kind: "weight" | "poop", id: number | string) {
     const confirmed = window.confirm("要删除这条记录吗？");
     if (!confirmed) return;
     await postAction({ action: kind === "weight" ? "delete-weight" : "delete-poop", id }, "这条记录已经撤回啦。");
@@ -419,7 +449,7 @@ export default function CoupleDashboard() {
           <h1>这里是鸡包蛋和拉粑臭的小日常</h1>
           <p>需要从属于你的专属入口进入。请让对方把那条链接重新发给你，不用注册账号。</p>
           <div className="access-farm">
-            <Image src="/farm-strip.webp" alt="温馨的像素农场" width={1536} height={512} priority unoptimized />
+            <img src="/farm-strip.webp" alt="温馨的像素农场" width={1536} height={512} />
           </div>
         </section>
       </main>
@@ -631,7 +661,7 @@ export default function CoupleDashboard() {
             ))}
           </div>
           <div className="farm-strip">
-            <Image src="/farm-strip.webp" alt="两个人一起经营的温馨像素农场" width={1536} height={512} unoptimized />
+            <img src="/farm-strip.webp" alt="两个人一起经营的温馨像素农场" width={1536} height={512} />
           </div>
         </section>
 
