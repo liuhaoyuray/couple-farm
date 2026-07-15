@@ -1,0 +1,15 @@
+{
+  "miniprogramRoot": "dist/",
+  "projectname": "couple-farm",
+  "description": "我们俩的小日常 - 微信小程序体验版",
+  "appid": "wxa777aca89186974c",
+  "setting": {
+    "urlCheck": false,
+    "es6": false,
+    "enhance": true,
+    "postcss": false,
+    "minified": false,
+    "compileHotReLoad": true
+  },
+  "compileType": "miniprogram"
+}

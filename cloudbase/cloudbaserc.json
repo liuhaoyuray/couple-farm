@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.cloudbase.net/cli/cloudbaserc.schema.json",
+  "envId": "couple-farm-d8gtiahu251a27c23",
+  "functionRoot": "./functions",
+  "functions": [
+    {
+      "name": "couple-tracker",
+      "dir": "./functions/couple-tracker",
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "timeout": 15,
+      "memorySize": 256,
+      "description": "我们俩的小日常：账户、配对与共享记录"
+    }
+  ]
+}

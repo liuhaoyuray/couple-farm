@@ -13,8 +13,10 @@
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "test:cloudbase": "node --test cloudbase/functions/couple-tracker/index.test.cjs",
     "build:cloudbase": "vite build --config vite.cloudbase.config.ts",
+    "build:miniprogram": "npm --prefix miniprogram run build:weapp",
+    "test:miniprogram": "npm --prefix miniprogram run typecheck",
     "validate:artifact": "bash scripts/validate-artifact.sh",
-    "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern cloudbase/dist",
+    "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern cloudbase/dist --ignore-pattern miniprogram/dist --ignore-pattern .deploy-home --ignore-pattern .deploy-cache",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {

@@ -1,0 +1,78 @@
+name: 上传微信小程序体验候选版
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，例如 0.1.0"
+        required: false
+        default: "0.1.0"
+      description:
+        description: "版本说明"
+        required: false
+        default: "我们俩的小日常体验版"
+  push:
+    branches: [main]
+    paths:
+      - "miniprogram/**"
+      - ".github/workflows/upload-wechat.yml"
+
+concurrency:
+  group: wechat-miniprogram-upload
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  WECHAT_APP_ID: wxa777aca89186974c
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: miniprogram/package-lock.json
+
+      - name: 检查上传私钥
+        env:
+          WECHAT_UPLOAD_PRIVATE_KEY: ${{ secrets.WECHAT_UPLOAD_PRIVATE_KEY }}
+        run: test -n "$WECHAT_UPLOAD_PRIVATE_KEY" || { echo "缺少 WECHAT_UPLOAD_PRIVATE_KEY"; exit 1; }
+
+      - name: 安装与验证
+        run: |
+          npm --prefix miniprogram ci
+          npm run test:miniprogram
+          npm run build:miniprogram
+
+      - name: 准备临时私钥文件
+        env:
+          WECHAT_UPLOAD_PRIVATE_KEY: ${{ secrets.WECHAT_UPLOAD_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$WECHAT_UPLOAD_PRIVATE_KEY" > "$RUNNER_TEMP/wechat-upload.key"
+
+      - name: 上传开发版本
+        env:
+          WECHAT_UPLOAD_PRIVATE_KEY_PATH: ${{ runner.temp }}/wechat-upload.key
+          WECHAT_VERSION: ${{ github.event.inputs.version || '0.1.0' }}
+          WECHAT_DESC: ${{ github.event.inputs.description || '我们俩的小日常自动构建' }}
+        run: npm --prefix miniprogram run upload:weapp
+
+      - name: 删除临时私钥
+        if: always()
+        run: rm -f "$RUNNER_TEMP/wechat-upload.key"
+
+      - name: 完成摘要
+        run: |
+          echo "### 小程序代码已上传" >> "$GITHUB_STEP_SUMMARY"
+          echo "请在微信公众平台把最新开发版本选为体验版，并添加体验成员。" >> "$GITHUB_STEP_SUMMARY"

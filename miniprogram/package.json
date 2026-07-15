@@ -1,0 +1,40 @@
+{
+  "name": "couple-farm-miniprogram",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:weapp": "HOME=/tmp taro build --type weapp",
+    "dev:weapp": "HOME=/tmp taro build --type weapp --watch",
+    "typecheck": "tsc --noEmit",
+    "upload:weapp": "node scripts/upload.cjs"
+  },
+  "dependencies": {
+    "@babel/runtime": "7.28.4",
+    "@tarojs/components": "4.2.0",
+    "@tarojs/helper": "4.2.0",
+    "@tarojs/plugin-framework-react": "4.2.0",
+    "@tarojs/plugin-platform-weapp": "4.2.0",
+    "@tarojs/react": "4.2.0",
+    "@tarojs/runtime": "4.2.0",
+    "@tarojs/shared": "4.2.0",
+    "@tarojs/taro": "4.2.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@babel/core": "7.28.4",
+    "@babel/plugin-transform-class-properties": "7.27.1",
+    "@babel/preset-react": "7.27.1",
+    "@tarojs/cli": "4.2.0",
+    "@tarojs/taro-loader": "4.2.0",
+    "@tarojs/webpack5-runner": "4.2.0",
+    "@types/react": "18.3.24",
+    "@types/webpack-env": "1.18.8",
+    "babel-preset-taro": "4.2.0",
+    "miniprogram-ci": "2.1.31",
+    "sass": "1.89.2",
+    "tsconfig-paths-webpack-plugin": "4.2.0",
+    "typescript": "5.9.3",
+    "webpack": "5.91.0"
+  }
+}

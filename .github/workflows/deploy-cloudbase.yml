@@ -1,0 +1,92 @@
+name: 发布大陆 H5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/formal-app.tsx"
+      - "cloudbase/**"
+      - "public/**"
+      - "vite.cloudbase.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-cloudbase.yml"
+
+concurrency:
+  group: cloudbase-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TCB_ENV_ID: couple-farm-d8gtiahu251a27c23
+  CLOUDBASE_CLI_VERSION: 3.6.2
+  H5_URL: https://couple-farm-d8gtiahu251a27c23-1430453850.tcloudbaseapp.com
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 检查部署凭据
+        env:
+          CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
+        run: |
+          test -n "$CLOUDBASE_API_KEY" || { echo "缺少 CLOUDBASE_API_KEY"; exit 1; }
+
+      - name: 安装依赖
+        run: |
+          npm ci
+          npm --prefix cloudbase/functions/couple-tracker ci
+
+      - name: 验证云函数与 H5
+        run: |
+          npm run test:cloudbase
+          printf '%s\n' "${GITHUB_SHA::12}" > public/build-version.txt
+          npm run build:cloudbase
+
+      - name: 安装 CloudBase CLI
+        run: npm install --global "@cloudbase/cli@$CLOUDBASE_CLI_VERSION"
+
+      - name: 登录腾讯云
+        env:
+          CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
+        run: tcb login --cloudbase-api-key "$CLOUDBASE_API_KEY" --env-id "$TCB_ENV_ID" --yes
+
+      - name: 配置匿名网关权限
+        run: tcb policy set "$(cat cloudbase/policy.rego)" --env-id "$TCB_ENV_ID" --json --yes
+
+      - name: 发布云函数
+        run: tcb fn deploy couple-tracker --force --env-id "$TCB_ENV_ID" --json --yes
+
+      - name: 验证云函数
+        run: |
+          result="$(tcb fn invoke couple-tracker --data '{"action":"health"}' --env-id "$TCB_ENV_ID" --json --yes)"
+          printf '%s\n' "$result" | grep -q 'couple-tracker'
+
+      - name: 发布静态网站
+        run: tcb hosting deploy cloudbase/dist / --env-id "$TCB_ENV_ID" --retry-count 5 --retry-interval 2000 --json --yes
+
+      - name: 验证大陆 H5
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            "$H5_URL/build-version.txt?v=$GITHUB_SHA" | grep -q "${GITHUB_SHA::12}"
+
+      - name: 完成摘要
+        run: |
+          echo "### 大陆 H5 发布完成" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 地址：$H5_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 环境：$TCB_ENV_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 云函数：couple-tracker" >> "$GITHUB_STEP_SUMMARY"

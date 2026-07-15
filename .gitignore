@@ -20,6 +20,10 @@
 # misc
 .DS_Store
 *.pem
+*.key
+*.p12
+*.pfx
+/secrets/
 
 # debug
 npm-debug.log*
@@ -38,7 +42,12 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /.sites-runtime/
+/.deploy-home/
+/.deploy-cache/
 /outputs/
 /work/
 /cloudbase/dist/
 /cloudbase/functions/*/node_modules/
+/miniprogram/node_modules/
+/miniprogram/dist/
+/miniprogram/.swc/
