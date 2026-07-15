@@ -2,8 +2,10 @@
 
 const crypto = require("node:crypto");
 const cloudbase = require("@cloudbase/node-sdk");
+const wxCloud = require("wx-server-sdk");
 
 const app = cloudbase.init({ env: cloudbase.SYMBOL_CURRENT_ENV });
+wxCloud.init({ env: wxCloud.DYNAMIC_CURRENT_ENV });
 const db = app.database();
 const command = db.command;
 const DAY = 24 * 60 * 60 * 1000;
@@ -21,11 +23,35 @@ const COLLECTIONS = [
   "poop_entries",
   "reactions",
   "anniversaries",
+  "community_posts",
+  "community_comments",
+  "community_reactions",
+  "community_follows",
+  "community_reports",
+  "community_blocks",
 ];
 
-const avatarChoices = ["🐣", "🐰", "🐻", "🐼", "🐱", "🐶", "🦊", "🐸"];
+const avatarChoices = [
+  "🐣", "🐰", "🐻", "🐼", "🐱", "🐶", "🦊", "🐸",
+  "🐹", "🐨", "🐯", "🦁", "🐮", "🐷", "🐵", "🐧",
+  "🦄", "🦋", "🐝", "🐙", "🦖", "🌻", "🍓", "🍑",
+];
 const colorChoices = ["#7457ff", "#ef5b8f", "#148bc8", "#2f9e62", "#d97706", "#b453c6"];
 const anniversaryIcons = ["💞", "🎂", "🌱", "✨", "🏠", "🎉"];
+const communityTopics = ["daily", "question", "milestone", "fun"];
+const communityStatKeys = ["togetherDays", "weeklyJointDays", "weeklyCheers", "farmVitality"];
+const communityPrompts = [
+  "最近一次被对方可爱到，是什么时候？",
+  "如果今天一起放假，最想去哪里？",
+  "分享一个只有你们俩懂的小暗号。",
+  "对方最近做的哪件小事让你很暖？",
+  "你们最想一起养成什么新习惯？",
+  "第一次见面时，对方给你的印象是什么？",
+  "给未来一年的你们留一句话吧。",
+  "最近一起吃到最好吃的东西是什么？",
+  "如果给你们的关系取一首歌名，会是什么？",
+  "今天想认真夸对方哪一点？",
+];
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
   "稳稳记录的人最厉害啦。",
@@ -120,6 +146,127 @@ function normalizeReminderSettings(value) {
       advanceDays: normalizeAdvanceDays(anniversary.advanceDays),
     },
   };
+}
+
+function cleanCommunityText(value, maximum = 300) {
+  return String(value || "")
+    .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, maximum);
+}
+
+function normalizePublicStats(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => cleanText(item, 32)).filter((item) => communityStatKeys.includes(item)))];
+}
+
+function normalizeCommunitySettings(couple) {
+  return {
+    enabled: Boolean(couple && couple.communityEnabled),
+    bio: cleanCommunityText(couple && couple.communityBio, 80),
+    publicStats: normalizePublicStats(couple && couple.communityPublicStats),
+  };
+}
+
+function normalizeAvatarFileId(value, uid, root = "avatars") {
+  const fileId = cleanText(value, 512);
+  if (!fileId) return null;
+  const expectedPath = `/${root}/${uid}/`;
+  if (!fileId.startsWith("cloud://") || !fileId.includes(expectedPath)) return undefined;
+  return fileId;
+}
+
+function contentCheckStatus(result, allowSuccessWithoutSuggestion = false) {
+  const payload = result && result.result && typeof result.result === "object" ? result.result : result;
+  if (!payload || typeof payload !== "object") return "unavailable";
+  const rawErrorCode = payload.errCode ?? payload.errcode ?? result.errCode ?? result.errcode;
+  const errorCode = rawErrorCode === undefined ? null : Number(rawErrorCode);
+  if (errorCode !== null && (!Number.isFinite(errorCode) || errorCode !== 0)) return "unavailable";
+  const suggestion = cleanText(payload.suggest || result.suggest, 32).toLowerCase();
+  if (suggestion) return suggestion === "pass" ? "pass" : "reject";
+  const message = cleanText(payload.errMsg || payload.errmsg || result.errMsg || result.errmsg, 128).toLowerCase();
+  if (allowSuccessWithoutSuggestion && (errorCode === 0 || /(^|:)ok$/.test(message))) return "pass";
+  return "unavailable";
+}
+
+async function checkTextSafety(content, requestContext) {
+  if (!requestContext || requestContext.channel !== "mini" || !requestContext.platformCaller.openId) {
+    return jsonError("社区发布目前只支持微信小程序。", 403, "MINI_ONLY");
+  }
+  try {
+    const result = await wxCloud.openapi.security.msgSecCheck({
+      content,
+      version: 2,
+      scene: 2,
+      openid: requestContext.platformCaller.openId,
+    });
+    const status = contentCheckStatus(result);
+    if (status === "reject") {
+      return jsonError("这段内容没有通过社区安全检查，请换一种说法。", 422, "CONTENT_UNSAFE");
+    }
+    if (status !== "pass") return jsonError("内容安全检查暂时没有响应，请稍后再试。", 503, "CONTENT_CHECK_UNAVAILABLE");
+    return null;
+  } catch (error) {
+    console.error("Text safety check failed", error);
+    return jsonError("内容安全检查暂时没有响应，请稍后再试。", 503, "CONTENT_CHECK_UNAVAILABLE");
+  }
+}
+
+async function checkImageSafety(fileId, requestContext) {
+  if (!requestContext || requestContext.channel !== "mini" || !requestContext.platformCaller.openId) {
+    return jsonError("图片上传目前只支持微信小程序。", 403, "MINI_ONLY");
+  }
+  try {
+    const downloaded = await wxCloud.downloadFile({ fileID: fileId });
+    const fileContent = Buffer.from(downloaded.fileContent || []);
+    if (!fileContent.length || fileContent.length > 1024 * 1024) {
+      return jsonError("图片需要小于 1MB，请压缩后再试。", 413, "IMAGE_TOO_LARGE");
+    }
+    const isPng = fileContent.length >= 8
+      && fileContent[0] === 0x89 && fileContent[1] === 0x50
+      && fileContent[2] === 0x4e && fileContent[3] === 0x47;
+    const isJpeg = fileContent.length >= 3
+      && fileContent[0] === 0xff && fileContent[1] === 0xd8 && fileContent[2] === 0xff;
+    if (!isPng && !isJpeg) {
+      return jsonError("目前只支持 JPG 或 PNG 图片。", 415, "IMAGE_FORMAT_INVALID");
+    }
+    const result = await wxCloud.openapi.security.imgSecCheck({
+      media: {
+        contentType: isPng ? "image/png" : "image/jpeg",
+        value: fileContent,
+      },
+    });
+    const status = contentCheckStatus(result, true);
+    if (status === "reject") {
+      return jsonError("这张图片没有通过社区安全检查，请换一张。", 422, "IMAGE_UNSAFE");
+    }
+    if (status !== "pass") return jsonError("图片安全检查暂时没有响应，请稍后再试。", 503, "IMAGE_CHECK_UNAVAILABLE");
+    return null;
+  } catch (error) {
+    console.error("Image safety check failed", error);
+    return jsonError("图片安全检查暂时没有响应，请稍后再试。", 503, "IMAGE_CHECK_UNAVAILABLE");
+  }
+}
+
+async function removeUploadedFile(fileId) {
+  if (!fileId || typeof wxCloud.deleteFile !== "function") return;
+  try {
+    await wxCloud.deleteFile({ fileList: [fileId] });
+  } catch (error) {
+    console.warn("Uploaded file cleanup failed", { fileId, error });
+  }
+}
+
+function shouldDiscardRejectedImage(result) {
+  const code = result && result.data && result.data.code;
+  return ["IMAGE_UNSAFE", "IMAGE_TOO_LARGE", "IMAGE_FORMAT_INVALID"].includes(code);
+}
+
+function currentCommunityPrompt(now = Date.now()) {
+  const index = Math.floor(now / DAY) % communityPrompts.length;
+  return { id: `prompt-${Math.floor(now / DAY)}`, text: communityPrompts[index] };
 }
 
 function randomMessage(kind) {
@@ -286,6 +433,7 @@ function publicUser(user, includePrivate = false) {
     uid: user.uid,
     nickname: user.nickname,
     avatar: user.avatar,
+    avatarFileId: cleanText(user.avatarFileId, 512) || null,
     color: user.color,
     profileComplete: Boolean(user.profileComplete),
     coupleId: user.coupleId || null,
@@ -304,6 +452,7 @@ function publicCouple(couple) {
     createdAt: couple.createdAt,
     updatedAt: couple.updatedAt || couple.createdAt,
     updatedBy: couple.updatedBy || null,
+    community: normalizeCommunitySettings(couple),
   };
 }
 
@@ -316,6 +465,7 @@ async function getOrCreateUser(identity) {
     uid: identity.uid,
     nickname: "农场新朋友",
     avatar: stableChoice(identity.uid, avatarChoices),
+    avatarFileId: null,
     color: stableChoice(`${identity.uid}:color`, colorChoices),
     profileComplete: false,
     coupleId: null,
@@ -537,20 +687,34 @@ async function bootstrap(user) {
   return dashboard;
 }
 
-async function updateProfile(user, payload) {
+async function updateProfile(user, payload, requestContext) {
   const nickname = cleanText(payload.nickname, 12);
   const avatar = cleanText(payload.avatar, 4);
   const color = cleanText(payload.color, 7);
   if (nickname.length < 1) return jsonError("昵称至少需要一个字。", 400, "NICKNAME_REQUIRED");
   if (!avatarChoices.includes(avatar)) return jsonError("请选择农场里提供的头像。", 400, "AVATAR_INVALID");
   if (color && !colorChoices.includes(color)) return jsonError("请选择农场里提供的代表色。", 400, "COLOR_INVALID");
-  const updated = await updateDocument("users", user.uid, {
+
+  const fields = {
     nickname,
     avatar,
     color: color || user.color,
     profileComplete: true,
     updatedAt: Date.now(),
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(payload, "avatarFileId")) {
+    const avatarFileId = normalizeAvatarFileId(payload.avatarFileId, user.uid);
+    if (avatarFileId === undefined) return jsonError("头像文件地址不正确，请重新选择。", 400, "AVATAR_FILE_INVALID");
+    if (avatarFileId && avatarFileId !== user.avatarFileId) {
+      const imageError = await checkImageSafety(avatarFileId, requestContext);
+      if (imageError) {
+        if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(avatarFileId);
+        return imageError;
+      }
+    }
+    fields.avatarFileId = avatarFileId;
+  }
+  const updated = await updateDocument("users", user.uid, fields);
   return response(200, { viewer: publicUser(updated, true) });
 }
 
@@ -702,6 +866,10 @@ async function acceptInvite(user, payload) {
     status: "active",
     farmName: cleanText(`${creator.nickname}和${user.nickname}的小农场`, 16),
     togetherSince: null,
+    communityEnabled: false,
+    communityBio: "",
+    communityPublicStats: [],
+    communityStats: null,
     createdAt: now,
     updatedAt: now,
     updatedBy: user.uid,
@@ -734,6 +902,7 @@ async function unbind(user) {
   const now = Date.now();
   await updateDocument("couples", couple.id, {
     status: "ended",
+    communityEnabled: false,
     endedAt: now,
     endedBy: user.uid,
     updatedAt: now,
@@ -884,11 +1053,405 @@ async function removeOwnedDocument(user, collectionName, id) {
   return response(200, { ok: true });
 }
 
-async function handleAction(user, action, payload) {
+function communityAuthorSnapshot(user, couple) {
+  return {
+    authorUid: user.uid,
+    authorNickname: user.nickname,
+    authorAvatar: user.avatar,
+    authorAvatarFileId: cleanText(user.avatarFileId, 512) || null,
+    authorColor: user.color,
+    authorCoupleId: couple.id,
+    farmName: couple.farmName,
+  };
+}
+
+function dateKeyUtc(timestamp) {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function publicCommunityStats(couple) {
+  const settings = normalizeCommunitySettings(couple);
+  const stats = couple.communityStats || {};
+  const labels = {
+    togetherDays: ["相伴", "天"],
+    weeklyJointDays: ["本周共同打卡", "天"],
+    weeklyCheers: ["本周互相回应", "次"],
+    farmVitality: ["农场活力", "点"],
+  };
+  return settings.publicStats.map((key) => ({
+    key,
+    label: labels[key][0],
+    value: Math.max(0, Number(stats[key]) || 0),
+    suffix: labels[key][1],
+  }));
+}
+
+async function refreshCommunityStats(couple) {
+  const now = Date.now();
+  const since = now - 7 * DAY;
+  const [weights, poops, cheers] = await Promise.all([
+    queryAll("weight_entries", { coupleId: couple.id }, [], 500),
+    queryAll("poop_entries", { coupleId: couple.id }, [], 500),
+    queryAll("reactions", { coupleId: couple.id }, [], 500),
+  ]);
+  const activityByMember = new Map(couple.memberUids.map((uid) => [uid, new Set()]));
+  for (const entry of weights) {
+    if (entry.recordedAt >= since && activityByMember.has(entry.ownerUid)) {
+      activityByMember.get(entry.ownerUid).add(dateKeyUtc(entry.recordedAt));
+    }
+  }
+  for (const entry of poops) {
+    if (entry.occurredAt >= since && activityByMember.has(entry.ownerUid)) {
+      activityByMember.get(entry.ownerUid).add(dateKeyUtc(entry.occurredAt));
+    }
+  }
+  const [firstDays = new Set(), secondDays = new Set()] = [...activityByMember.values()];
+  const weeklyJointDays = [...firstDays].filter((key) => secondDays.has(key)).length;
+  const weeklyCheers = cheers.filter((item) => item.createdAt >= since).length;
+  const togetherTimestamp = couple.togetherSince ? Date.parse(`${couple.togetherSince}T00:00:00Z`) : NaN;
+  const togetherDays = Number.isFinite(togetherTimestamp)
+    ? Math.max(1, Math.floor((now - togetherTimestamp) / DAY) + 1)
+    : 0;
+  const totalActiveDays = firstDays.size + secondDays.size;
+  const farmVitality = weeklyJointDays * 18 + Math.min(weeklyCheers, 14) * 3 + Math.min(totalActiveDays, 14) * 2;
+  const communityStats = { togetherDays, weeklyJointDays, weeklyCheers, farmVitality, updatedAt: now };
+  const updated = await updateDocument("couples", couple.id, { communityStats, updatedAt: now });
+  return updated;
+}
+
+async function updateCommunitySettings(user, payload, requestContext) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const enabled = Boolean(payload.enabled);
+  const bio = cleanCommunityText(payload.bio, 80);
+  const publicStats = normalizePublicStats(payload.publicStats);
+  if (enabled && bio) {
+    const safetyError = await checkTextSafety(bio, requestContext);
+    if (safetyError) return safetyError;
+  }
+  const updated = await updateDocument("couples", relationship.couple.id, {
+    communityEnabled: enabled,
+    communityBio: bio,
+    communityPublicStats: publicStats,
+    updatedBy: user.uid,
+    updatedAt: Date.now(),
+  });
+  const withStats = enabled ? await refreshCommunityStats(updated) : updated;
+  return response(200, {
+    settings: normalizeCommunitySettings(withStats),
+    stats: publicCommunityStats(withStats),
+  });
+}
+
+async function communityRateLimited(collectionName, userUid, windowMs, maximum) {
+  const recent = await queryAll(collectionName, { authorUid: userUid }, [], 300);
+  const threshold = Date.now() - windowMs;
+  return recent.filter((item) => item.createdAt >= threshold && item.status !== "deleted").length >= maximum;
+}
+
+async function communityFeed(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const mode = payload.mode === "following" ? "following" : "all";
+  let viewerCouple = relationship.couple;
+  if (normalizeCommunitySettings(viewerCouple).enabled) {
+    viewerCouple = await refreshCommunityStats(viewerCouple);
+  }
+  const [couples, posts, comments, viewerLikes, follows, blocks] = await Promise.all([
+    queryAll("couples", {}, [], 200),
+    queryAll("community_posts", {}, [], 400),
+    queryAll("community_comments", {}, [], 800),
+    queryAll("community_reactions", { fromCoupleId: viewerCouple.id }, [], 500),
+    queryAll("community_follows", { fromCoupleId: viewerCouple.id }, [], 500),
+    queryAll("community_blocks", { fromCoupleId: viewerCouple.id }, [], 500),
+  ]);
+  const enabledCouples = new Map(couples
+    .filter((couple) => couple.status === "active" && couple.communityEnabled)
+    .map((couple) => [couple.id, couple]));
+  const blockedIds = new Set(blocks.filter((item) => item.active !== false).map((item) => item.toCoupleId));
+  const followedIds = new Set(follows.filter((item) => item.active !== false).map((item) => item.toCoupleId));
+  const likedPostIds = new Set(viewerLikes.filter((item) => item.active !== false).map((item) => item.postId));
+  const visiblePosts = posts
+    .filter((post) => post.status === "published")
+    .filter((post) => enabledCouples.has(post.authorCoupleId))
+    .filter((post) => !blockedIds.has(post.authorCoupleId))
+    .filter((post) => mode !== "following" || followedIds.has(post.authorCoupleId) || post.authorCoupleId === viewerCouple.id)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 40);
+  const visiblePostIds = new Set(visiblePosts.map((post) => post.id));
+  const commentsByPost = new Map();
+  for (const comment of comments
+    .filter((item) => item.status === "published" && visiblePostIds.has(item.postId))
+    .filter((item) => enabledCouples.has(item.authorCoupleId) && !blockedIds.has(item.authorCoupleId))
+    .sort((left, right) => left.createdAt - right.createdAt)) {
+    const list = commentsByPost.get(comment.postId) || [];
+    list.push(comment);
+    commentsByPost.set(comment.postId, list.slice(-8));
+  }
+  const hydratedPosts = visiblePosts.map((post) => ({
+    ...post,
+    likedByViewer: likedPostIds.has(post.id),
+    followingFarm: followedIds.has(post.authorCoupleId),
+    ownFarm: post.authorCoupleId === viewerCouple.id,
+    comments: commentsByPost.get(post.id) || [],
+  }));
+  const leaderboard = [...enabledCouples.values()]
+    .filter((couple) => !blockedIds.has(couple.id))
+    .map((couple) => ({
+      coupleId: couple.id,
+      farmName: couple.farmName,
+      bio: cleanCommunityText(couple.communityBio, 80),
+      stats: publicCommunityStats(couple),
+      vitality: Number(couple.communityStats && couple.communityStats.farmVitality) || 0,
+      following: followedIds.has(couple.id),
+      ownFarm: couple.id === viewerCouple.id,
+    }))
+    .sort((left, right) => right.vitality - left.vitality)
+    .slice(0, 12);
+  return response(200, {
+    mode,
+    prompt: currentCommunityPrompt(),
+    settings: normalizeCommunitySettings(viewerCouple),
+    stats: publicCommunityStats(viewerCouple),
+    posts: hydratedPosts,
+    leaderboard,
+  });
+}
+
+async function createCommunityPost(user, payload, requestContext) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (!relationship.couple.communityEnabled) {
+    return jsonError("先开启你们的社区农场名片，再来发动态吧。", 409, "COMMUNITY_DISABLED");
+  }
+  if (await communityRateLimited("community_posts", user.uid, 15 * 60 * 1000, 5)) {
+    return jsonError("发得有点快啦，歇一会儿再来村口聊。", 429, "POST_RATE_LIMITED");
+  }
+  const content = cleanCommunityText(payload.content, 300);
+  if (content.length < 2) return jsonError("动态至少写两个字。", 400, "POST_CONTENT_INVALID");
+  const topic = communityTopics.includes(payload.topic) ? payload.topic : "daily";
+  const safetyError = await checkTextSafety(content, requestContext);
+  if (safetyError) return safetyError;
+  const imageFileId = normalizeAvatarFileId(payload.imageFileId, user.uid, "community");
+  if (imageFileId === undefined) return jsonError("动态图片地址不正确，请重新选择。", 400, "POST_IMAGE_INVALID");
+  if (imageFileId) {
+    const imageError = await checkImageSafety(imageFileId, requestContext);
+    if (imageError) {
+      if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(imageFileId);
+      return imageError;
+    }
+  }
+  const updatedCouple = await refreshCommunityStats(relationship.couple);
+  const settings = normalizeCommunitySettings(updatedCouple);
+  const shareStatKey = settings.publicStats.includes(payload.shareStatKey) ? payload.shareStatKey : null;
+  const shareStat = shareStatKey
+    ? publicCommunityStats(updatedCouple).find((item) => item.key === shareStatKey) || null
+    : null;
+  const now = Date.now();
+  const post = await addDocument("community_posts", {
+    ...communityAuthorSnapshot(user, updatedCouple),
+    content,
+    topic,
+    promptId: cleanText(payload.promptId, 64) || null,
+    imageFileId,
+    shareStat,
+    likeCount: 0,
+    commentCount: 0,
+    reportCount: 0,
+    status: "published",
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { post });
+}
+
+async function toggleCommunityLike(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (!relationship.couple.communityEnabled) {
+    return jsonError("先开启社区农场名片，才能给别人送花。", 409, "COMMUNITY_DISABLED");
+  }
+  const postId = cleanText(payload.postId, 128);
+  const post = postId ? await getDocument("community_posts", postId) : null;
+  if (!post || post.status !== "published") return jsonError("这条动态已经不在村口了。", 404, "POST_NOT_FOUND");
+  const authorCouple = await getDocument("couples", post.authorCoupleId);
+  if (!authorCouple || authorCouple.status !== "active" || !authorCouple.communityEnabled) {
+    return jsonError("这条动态已经不在村口了。", 404, "POST_NOT_FOUND");
+  }
+  const id = `like_${sha256(`${relationship.couple.id}:${postId}`)}`;
+  const current = await getDocument("community_reactions", id);
+  const active = !(current && current.active !== false);
+  await setDocument("community_reactions", id, {
+    postId,
+    fromCoupleId: relationship.couple.id,
+    active,
+    createdAt: current ? current.createdAt : Date.now(),
+    updatedAt: Date.now(),
+  });
+  const likes = await queryAll("community_reactions", { postId }, [], 2000);
+  const likeCount = likes.filter((item) => item.active !== false).length;
+  await updateDocument("community_posts", postId, { likeCount, updatedAt: Date.now() });
+  return response(200, { active, likeCount });
+}
+
+async function addCommunityComment(user, payload, requestContext) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (!relationship.couple.communityEnabled) {
+    return jsonError("先开启社区农场名片，才能参与留言。", 409, "COMMUNITY_DISABLED");
+  }
+  if (await communityRateLimited("community_comments", user.uid, 10 * 60 * 1000, 12)) {
+    return jsonError("留言有点快啦，稍等一会儿。", 429, "COMMENT_RATE_LIMITED");
+  }
+  const postId = cleanText(payload.postId, 128);
+  const post = postId ? await getDocument("community_posts", postId) : null;
+  if (!post || post.status !== "published") return jsonError("这条动态已经不在村口了。", 404, "POST_NOT_FOUND");
+  const authorCouple = await getDocument("couples", post.authorCoupleId);
+  if (!authorCouple || authorCouple.status !== "active" || !authorCouple.communityEnabled) {
+    return jsonError("这条动态已经不在村口了。", 404, "POST_NOT_FOUND");
+  }
+  const content = cleanCommunityText(payload.content, 120);
+  if (!content) return jsonError("写点内容再留言吧。", 400, "COMMENT_CONTENT_INVALID");
+  const safetyError = await checkTextSafety(content, requestContext);
+  if (safetyError) return safetyError;
+  const now = Date.now();
+  const comment = await addDocument("community_comments", {
+    ...communityAuthorSnapshot(user, relationship.couple),
+    postId,
+    content,
+    status: "published",
+    reportCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const comments = await queryAll("community_comments", { postId }, [], 2000);
+  const commentCount = comments.filter((item) => item.status === "published").length;
+  await updateDocument("community_posts", postId, { commentCount, updatedAt: now });
+  return response(201, { comment, commentCount });
+}
+
+async function deleteCommunityContent(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const type = payload.type === "comment" ? "comment" : "post";
+  const collectionName = type === "post" ? "community_posts" : "community_comments";
+  const id = cleanText(payload.id, 128);
+  const item = id ? await getDocument(collectionName, id) : null;
+  if (!item) return jsonError("没有找到这条社区内容。", 404, "COMMUNITY_CONTENT_NOT_FOUND");
+  const canDelete = type === "post"
+    ? item.authorCoupleId === relationship.couple.id
+    : item.authorUid === user.uid || item.authorCoupleId === relationship.couple.id;
+  if (!canDelete) return jsonError("只能删除自己农场发布的内容。", 403, "COMMUNITY_CONTENT_FORBIDDEN");
+  await updateDocument(collectionName, id, { status: "deleted", deletedAt: Date.now(), deletedBy: user.uid });
+  if (type === "post" && item.imageFileId) await removeUploadedFile(item.imageFileId);
+  if (type === "comment") {
+    const post = await getDocument("community_posts", item.postId);
+    if (post) {
+      const comments = await queryAll("community_comments", { postId: post.id }, [], 2000);
+      await updateDocument("community_posts", post.id, {
+        commentCount: comments.filter((comment) => comment.status === "published").length,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+  return response(200, { ok: true });
+}
+
+async function toggleCommunityFollow(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (!relationship.couple.communityEnabled) {
+    return jsonError("先开启社区农场名片，才能关注其他农场。", 409, "COMMUNITY_DISABLED");
+  }
+  const toCoupleId = cleanText(payload.coupleId, 128);
+  if (!toCoupleId || toCoupleId === relationship.couple.id) {
+    return jsonError("不能关注自己的农场。", 400, "FOLLOW_INVALID");
+  }
+  const target = await getDocument("couples", toCoupleId);
+  if (!target || target.status !== "active" || !target.communityEnabled) {
+    return jsonError("这个农场暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
+  }
+  const blockId = `block_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
+  const block = await getDocument("community_blocks", blockId);
+  if (block && block.active !== false) {
+    return jsonError("请先取消屏蔽，再关注这个农场。", 409, "COMMUNITY_FARM_BLOCKED");
+  }
+  const id = `follow_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
+  const current = await getDocument("community_follows", id);
+  const active = !(current && current.active !== false);
+  await setDocument("community_follows", id, {
+    fromCoupleId: relationship.couple.id,
+    toCoupleId,
+    active,
+    createdAt: current ? current.createdAt : Date.now(),
+    updatedAt: Date.now(),
+  });
+  return response(200, { active });
+}
+
+async function reportCommunityContent(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const type = payload.type === "comment" ? "comment" : "post";
+  const collectionName = type === "post" ? "community_posts" : "community_comments";
+  const id = cleanText(payload.id, 128);
+  const item = id ? await getDocument(collectionName, id) : null;
+  if (!item || item.status !== "published") return jsonError("这条内容已经不存在。", 404, "COMMUNITY_CONTENT_NOT_FOUND");
+  if (item.authorCoupleId === relationship.couple.id) return jsonError("不能举报自己农场的内容。", 400, "REPORT_SELF");
+  const reasons = ["spam", "abuse", "privacy", "unsafe", "other"];
+  const reason = reasons.includes(payload.reason) ? payload.reason : "other";
+  const reportId = `report_${sha256(`${relationship.couple.id}:${type}:${id}`)}`;
+  if (await getDocument("community_reports", reportId)) return jsonError("这条内容已经举报过了。", 409, "ALREADY_REPORTED");
+  await setDocument("community_reports", reportId, {
+    fromCoupleId: relationship.couple.id,
+    targetCoupleId: item.authorCoupleId,
+    targetType: type,
+    targetId: id,
+    reason,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+  const reportCount = Number(item.reportCount || 0) + 1;
+  await updateDocument(collectionName, id, {
+    reportCount,
+    status: reportCount >= 3 ? "review" : "published",
+    updatedAt: Date.now(),
+  });
+  return response(201, { ok: true });
+}
+
+async function blockCommunityFarm(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const toCoupleId = cleanText(payload.coupleId, 128);
+  if (!toCoupleId || toCoupleId === relationship.couple.id) {
+    return jsonError("不能屏蔽自己的农场。", 400, "BLOCK_INVALID");
+  }
+  const target = await getDocument("couples", toCoupleId);
+  if (!target || target.status !== "active" || !target.communityEnabled) {
+    return jsonError("这个农场暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
+  }
+  const id = `block_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
+  await setDocument("community_blocks", id, {
+    fromCoupleId: relationship.couple.id,
+    toCoupleId,
+    active: true,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const followId = `follow_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
+  const follow = await getDocument("community_follows", followId);
+  if (follow && follow.active !== false) {
+    await updateDocument("community_follows", followId, { active: false, updatedAt: Date.now() });
+  }
+  return response(200, { ok: true });
+}
+
+async function handleAction(user, action, payload, requestContext) {
   switch (action) {
     case "bootstrap": return bootstrap(user);
     case "get-dashboard": return readDashboard(user);
-    case "update-profile": return updateProfile(user, payload);
+    case "update-profile": return updateProfile(user, payload, requestContext);
     case "update-couple-settings": return updateCoupleSettings(user, payload);
     case "update-reminders": return updateReminderSettings(user, payload);
     case "create-invite": return createInvite(user);
@@ -906,6 +1469,15 @@ async function handleAction(user, action, payload) {
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
     case "delete-identity": return deleteIdentity(user);
+    case "community-feed": return communityFeed(user, payload);
+    case "update-community-settings": return updateCommunitySettings(user, payload, requestContext);
+    case "create-community-post": return createCommunityPost(user, payload, requestContext);
+    case "toggle-community-like": return toggleCommunityLike(user, payload);
+    case "add-community-comment": return addCommunityComment(user, payload, requestContext);
+    case "delete-community-content": return deleteCommunityContent(user, payload);
+    case "toggle-community-follow": return toggleCommunityFollow(user, payload);
+    case "report-community-content": return reportCommunityContent(user, payload);
+    case "block-community-farm": return blockCommunityFarm(user, payload);
     default: return jsonError("没有认出这个操作。", 405, "ACTION_UNKNOWN");
   }
 }
@@ -916,7 +1488,7 @@ exports.main = async function main(event = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.2.0",
+      version: "0.3.0",
       serverTime: Date.now(),
     });
   }
@@ -931,7 +1503,7 @@ exports.main = async function main(event = {}) {
     if (action === "recover-account") return await recoverAccount(platformCaller, payload);
 
     let identity;
-    if (event.channel === "mini" && platformCaller.openId) {
+    if (event.channel === "mini" && platformCaller.openId && !event.sessionToken) {
       identity = {
         uid: `wx_${sha256(`${platformCaller.appId || "wechat"}:${platformCaller.openId}`).slice(0, 40)}`,
         authProvider: "wechat",
@@ -949,7 +1521,10 @@ exports.main = async function main(event = {}) {
     }
 
     const user = await getOrCreateUser(identity);
-    return await handleAction(user, action, payload);
+    return await handleAction(user, action, payload, {
+      channel: event.channel,
+      platformCaller,
+    });
   } catch (error) {
     console.error("couple-tracker cloud function failed", {
       platformUid: platformCaller.uid,

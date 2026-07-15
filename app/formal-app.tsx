@@ -496,7 +496,7 @@ export default function FormalApp() {
           <h1>你想在农场里叫什么？</h1>
           <p>昵称可以是中文；头像以后也可以继续修改。</p>
           <form onSubmit={saveProfile} className="formal-form">
-            <label>昵称<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如 鸡包蛋" maxLength={12} required /></label>
+            <label>昵称<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如 小麦苗、团子、阿星" maxLength={12} required /></label>
             <fieldset className="formal-avatar-picker"><legend>像素居民</legend>{avatars.map((choice) => <button type="button" key={choice} className={avatar === choice ? "active" : ""} onClick={() => setAvatar(choice)}>{choice}</button>)}</fieldset>
             {error && <p className="formal-error">{error}</p>}
             <button className="formal-primary" disabled={busy}>{busy ? "正在保存…" : "就这样，继续"}</button>

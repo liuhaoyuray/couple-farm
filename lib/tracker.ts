@@ -3,16 +3,16 @@ export type MemberId = "chicken" | "poopy";
 export const members = {
   chicken: {
     id: "chicken" as const,
-    name: "鸡包蛋",
-    shortName: "鸡包蛋",
+    name: "小麦苗",
+    shortName: "小麦苗",
     color: "#7457ff",
     pale: "#eee9ff",
     avatar: "/avatar-chicken-egg.webp",
   },
   poopy: {
     id: "poopy" as const,
-    name: "拉粑臭",
-    shortName: "拉粑臭",
+    name: "小团子",
+    shortName: "小团子",
     color: "#ef5b8f",
     pale: "#fff0f6",
     avatar: "/avatar-poopy.webp",

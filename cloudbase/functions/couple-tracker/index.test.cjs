@@ -113,8 +113,28 @@ function createFakeCloudbase() {
 
 const originalLoad = Module._load;
 const fakeCloudbase = createFakeCloudbase();
+let textSafetyResponse = { result: { suggest: "pass" } };
+let imageSafetyResponse = { result: { suggest: "pass" } };
+const fakeWxCloud = {
+  DYNAMIC_CURRENT_ENV: "current",
+  init() {},
+  downloadFile: async () => ({ fileContent: Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]) }),
+  openapi: {
+    security: {
+      msgSecCheck: async () => {
+        if (textSafetyResponse instanceof Error) throw textSafetyResponse;
+        return textSafetyResponse;
+      },
+      imgSecCheck: async () => {
+        if (imageSafetyResponse instanceof Error) throw imageSafetyResponse;
+        return imageSafetyResponse;
+      },
+    },
+  },
+};
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "@cloudbase/node-sdk") return fakeCloudbase;
+  if (request === "wx-server-sdk") return fakeWxCloud;
   return originalLoad.call(this, request, parent, isMain);
 };
 const { main } = require("./index.js");
@@ -136,7 +156,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.2.0");
+  assert.equal(result.data.version, "0.3.0");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -321,6 +341,113 @@ test("supports editable profiles, farm settings, reminders and anniversaries", a
 
   const removed = await invoke("browser-a", "delete-anniversary", { id: created.data.anniversary.id }, firstToken);
   assert.equal(removed.status, 200);
+});
+
+test("supports a moderated community feed with images, follows, likes, comments and blocking", async () => {
+  const thirdRegistration = await invoke("browser-c", "register", {
+    username: "sunny_farm",
+    password: "sunnyFarm123",
+  });
+  const fourthRegistration = await invoke("browser-d", "register", {
+    username: "moon_farm",
+    password: "moonFarm456",
+  });
+  const thirdToken = thirdRegistration.data.sessionToken;
+  const fourthToken = fourthRegistration.data.sessionToken;
+  const thirdUid = thirdRegistration.data.viewer.uid;
+  await invoke("browser-c", "update-profile", { nickname: "太阳", avatar: "🌻" }, thirdToken);
+  await invoke("browser-d", "update-profile", { nickname: "月亮", avatar: "🐰" }, fourthToken);
+  const invite = await invoke("browser-c", "create-invite", {}, thirdToken);
+  const paired = await invoke("browser-d", "accept-invite", { code: invite.data.code }, fourthToken);
+  const secondCoupleId = paired.data.couple.id;
+  assert.deepEqual(paired.data.couple.community.publicStats, []);
+
+  const firstMiniCaller = { uid: "browser-a", openId: "openid-a", appId: "wx-app" };
+  const secondMiniCaller = { uid: "browser-c", openId: "openid-c", appId: "wx-app" };
+  const firstSettings = await invoke(firstMiniCaller, "update-community-settings", {
+    enabled: true,
+    bio: "一起认真生活的小农场",
+    publicStats: ["togetherDays", "weeklyJointDays", "weeklyCheers", "farmVitality"],
+  }, firstToken, "mini");
+  assert.equal(firstSettings.status, 200);
+
+  const secondSettings = await invoke(secondMiniCaller, "update-community-settings", {
+    enabled: true,
+    bio: "太阳和月亮的农场",
+    publicStats: ["farmVitality"],
+  }, thirdToken, "mini");
+  assert.equal(secondSettings.status, 200);
+
+  const created = await invoke(secondMiniCaller, "create-community-post", {
+    content: "今天一起种下了第一颗社区种子。",
+    topic: "milestone",
+    imageFileId: `cloud://test.bucket/community/${thirdUid}/first.jpg`,
+    shareStatKey: "farmVitality",
+  }, thirdToken, "mini");
+  assert.equal(created.status, 201);
+  assert.equal(created.data.post.authorCoupleId, secondCoupleId);
+  assert.ok(created.data.post.imageFileId);
+
+  textSafetyResponse = {};
+  const failClosed = await invoke(secondMiniCaller, "create-community-post", {
+    content: "审核结果不明确时不能发布。",
+    topic: "daily",
+  }, thirdToken, "mini");
+  assert.equal(failClosed.status, 503);
+  assert.equal(failClosed.data.code, "CONTENT_CHECK_UNAVAILABLE");
+  textSafetyResponse = { result: { suggest: "pass" } };
+
+  const feed = await invoke(firstMiniCaller, "community-feed", { mode: "all" }, firstToken, "mini");
+  assert.equal(feed.status, 200);
+  assert.equal(feed.data.posts.length, 1);
+  assert.equal(feed.data.posts[0].likedByViewer, false);
+  assert.equal(feed.data.posts[0].shareStat.key, "farmVitality");
+
+  const followed = await invoke(firstMiniCaller, "toggle-community-follow", {
+    coupleId: secondCoupleId,
+  }, firstToken, "mini");
+  assert.equal(followed.status, 200);
+  assert.equal(followed.data.active, true);
+
+  const liked = await invoke(firstMiniCaller, "toggle-community-like", {
+    postId: created.data.post.id,
+  }, firstToken, "mini");
+  assert.equal(liked.status, 200);
+  assert.equal(liked.data.likeCount, 1);
+
+  const commented = await invoke(firstMiniCaller, "add-community-comment", {
+    postId: created.data.post.id,
+    content: "欢迎来到村口！",
+  }, firstToken, "mini");
+  assert.equal(commented.status, 201);
+
+  const followingFeed = await invoke(firstMiniCaller, "community-feed", { mode: "following" }, firstToken, "mini");
+  assert.equal(followingFeed.data.posts.length, 1);
+  assert.equal(followingFeed.data.posts[0].comments.length, 1);
+  assert.equal(followingFeed.data.posts[0].likedByViewer, true);
+
+  const blocked = await invoke(firstMiniCaller, "block-community-farm", {
+    coupleId: secondCoupleId,
+  }, firstToken, "mini");
+  assert.equal(blocked.status, 200);
+  const afterBlock = await invoke(firstMiniCaller, "community-feed", { mode: "all" }, firstToken, "mini");
+  assert.equal(afterBlock.data.posts.length, 0);
+
+  const refollowBlocked = await invoke(firstMiniCaller, "toggle-community-follow", {
+    coupleId: secondCoupleId,
+  }, firstToken, "mini");
+  assert.equal(refollowBlocked.status, 409);
+  assert.equal(refollowBlocked.data.code, "COMMUNITY_FARM_BLOCKED");
+
+  textSafetyResponse = new Error("moderation unavailable");
+  const disabled = await invoke(firstMiniCaller, "update-community-settings", {
+    enabled: false,
+    bio: "旧的公开介绍",
+    publicStats: [],
+  }, firstToken, "mini");
+  assert.equal(disabled.status, 200);
+  textSafetyResponse = { result: { suggest: "pass" } };
+  imageSafetyResponse = { result: { suggest: "pass" } };
 });
 
 test("allows owners to edit their records and clear their history", async () => {

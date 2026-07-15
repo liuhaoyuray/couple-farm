@@ -455,7 +455,7 @@ export default function CoupleDashboard() {
         <section className="access-card pixel-panel">
           <div className="access-heart" aria-hidden="true">♥</div>
           <p className="eyebrow">秘密小农场</p>
-          <h1>这里是鸡包蛋和拉粑臭的小日常</h1>
+          <h1>这里是你和伴侣的小日常</h1>
           <p>需要从属于你的专属入口进入。请让对方把那条链接重新发给你，不用注册账号。</p>
           <div className="access-farm">
             <img src="/farm-strip.webp" alt="温馨的像素农场" width={1536} height={512} />
@@ -694,7 +694,7 @@ export default function CoupleDashboard() {
         </section>
 
         <footer>
-          <span>♥</span> 鸡包蛋与拉粑臭的小农场 · 数据每15秒自动同步
+          <span>♥</span> 情侣小农场 · 数据每15秒自动同步
         </footer>
       </div>
 
