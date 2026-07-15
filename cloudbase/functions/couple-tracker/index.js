@@ -20,10 +20,12 @@ const COLLECTIONS = [
   "weight_entries",
   "poop_entries",
   "reactions",
+  "anniversaries",
 ];
 
 const avatarChoices = ["🐣", "🐰", "🐻", "🐼", "🐱", "🐶", "🦊", "🐸"];
 const colorChoices = ["#7457ff", "#ef5b8f", "#148bc8", "#2f9e62", "#d97706", "#b453c6"];
+const anniversaryIcons = ["💞", "🎂", "🌱", "✨", "🏠", "🎉"];
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
   "稳稳记录的人最厉害啦。",
@@ -34,6 +36,11 @@ const teaseMessages = [
   "体重秤和小马桶都等困了。",
   "今日份轻轻嘲讽已经送达！",
 ];
+const defaultReminderSettings = {
+  weight: { enabled: false, time: "08:00", days: [0, 1, 2, 3, 4, 5, 6] },
+  poop: { enabled: false, time: "20:30", days: [0, 1, 2, 3, 4, 5, 6] },
+  anniversary: { enabled: true, advanceDays: [7, 1, 0] },
+};
 
 function response(status, data) {
   return { status, data };
@@ -53,6 +60,66 @@ function parseOccurrence(value) {
   if (!Number.isFinite(timestamp)) return null;
   if (timestamp > now + 5 * 60 * 1000 || timestamp < now - 30 * DAY) return null;
   return Math.round(timestamp);
+}
+
+function parseDateString(value, allowFuture = true) {
+  const date = cleanText(value, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const timestamp = Date.UTC(year, month - 1, day);
+  const parsed = new Date(timestamp);
+  if (
+    year < 1900
+    || year > 2100
+    || parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day
+  ) return null;
+  if (!allowFuture && timestamp > Date.now() + DAY) return null;
+  return date;
+}
+
+function normalizeClockTime(value, fallback) {
+  const time = cleanText(value, 5);
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : fallback;
+}
+
+function normalizeWeekdays(value) {
+  if (!Array.isArray(value)) return [...defaultReminderSettings.weight.days];
+  const days = [...new Set(value.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))];
+  return days.length ? days.sort((left, right) => left - right) : [...defaultReminderSettings.weight.days];
+}
+
+function normalizeAdvanceDays(value) {
+  if (!Array.isArray(value)) return [...defaultReminderSettings.anniversary.advanceDays];
+  const days = [...new Set(value.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 30))];
+  return days.length ? days.sort((left, right) => right - left) : [...defaultReminderSettings.anniversary.advanceDays];
+}
+
+function normalizeReminderSettings(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const weight = source.weight && typeof source.weight === "object" ? source.weight : {};
+  const poop = source.poop && typeof source.poop === "object" ? source.poop : {};
+  const anniversary = source.anniversary && typeof source.anniversary === "object" ? source.anniversary : {};
+  return {
+    weight: {
+      enabled: Boolean(weight.enabled),
+      time: normalizeClockTime(weight.time, defaultReminderSettings.weight.time),
+      days: normalizeWeekdays(weight.days),
+    },
+    poop: {
+      enabled: Boolean(poop.enabled),
+      time: normalizeClockTime(poop.time, defaultReminderSettings.poop.time),
+      days: normalizeWeekdays(poop.days),
+    },
+    anniversary: {
+      enabled: anniversary.enabled !== false,
+      advanceDays: normalizeAdvanceDays(anniversary.advanceDays),
+    },
+  };
 }
 
 function randomMessage(kind) {
@@ -213,9 +280,9 @@ function getPlatformCaller() {
   }
 }
 
-function publicUser(user) {
+function publicUser(user, includePrivate = false) {
   if (!user) return null;
-  return {
+  const result = {
     uid: user.uid,
     nickname: user.nickname,
     avatar: user.avatar,
@@ -223,6 +290,20 @@ function publicUser(user) {
     profileComplete: Boolean(user.profileComplete),
     coupleId: user.coupleId || null,
     createdAt: user.createdAt,
+  };
+  if (includePrivate) result.reminders = normalizeReminderSettings(user.reminders);
+  return result;
+}
+
+function publicCouple(couple) {
+  if (!couple) return null;
+  return {
+    id: couple.id,
+    farmName: cleanText(couple.farmName, 16) || "我们的情侣小农场",
+    togetherSince: parseDateString(couple.togetherSince, false),
+    createdAt: couple.createdAt,
+    updatedAt: couple.updatedAt || couple.createdAt,
+    updatedBy: couple.updatedBy || null,
   };
 }
 
@@ -239,6 +320,7 @@ async function getOrCreateUser(identity) {
     profileComplete: false,
     coupleId: null,
     authProvider: identity.authProvider || "password",
+    reminders: normalizeReminderSettings(),
     createdAt: now,
     updatedAt: now,
   };
@@ -314,7 +396,7 @@ async function registerAccount(platformCaller, payload) {
   return response(201, {
     sessionToken,
     recoveryCode,
-    viewer: publicUser(user),
+    viewer: publicUser(user, true),
   });
 }
 
@@ -347,7 +429,7 @@ async function loginAccount(platformCaller, payload) {
   await updateDocument("accounts", id, { failedAttempts: 0, lockUntil: null, updatedAt: now });
   const user = await getOrCreateUser({ uid: account.uid, authProvider: "password" });
   const sessionToken = await createSession(account.uid, platformCaller);
-  return response(200, { sessionToken, viewer: publicUser(user) });
+  return response(200, { sessionToken, viewer: publicUser(user, true) });
 }
 
 async function recoverAccount(platformCaller, payload) {
@@ -372,7 +454,7 @@ async function recoverAccount(platformCaller, payload) {
   await revokeUserSessions(account.uid);
   const sessionToken = await createSession(account.uid, platformCaller);
   const user = await getOrCreateUser({ uid: account.uid, authProvider: "password" });
-  return response(200, { sessionToken, viewer: publicUser(user) });
+  return response(200, { sessionToken, viewer: publicUser(user, true) });
 }
 
 async function requireCouple(user) {
@@ -394,7 +476,7 @@ async function readDashboard(user) {
   if (relationship.error) return relationship.error;
   const { couple, partner } = relationship;
   const now = Date.now();
-  const [weights, poops, reactions] = await Promise.all([
+  const [weights, poops, reactions, anniversaries] = await Promise.all([
     queryAll(
       "weight_entries",
       { coupleId: couple.id, recordedAt: command.gte(now - 190 * DAY) },
@@ -413,15 +495,22 @@ async function readDashboard(user) {
       [["createdAt", "desc"]],
       60,
     ),
+    queryAll(
+      "anniversaries",
+      { coupleId: couple.id },
+      [["date", "asc"]],
+      50,
+    ),
   ]);
 
   return response(200, {
-    viewer: publicUser(user),
+    viewer: publicUser(user, true),
     partner: publicUser(partner),
-    couple: { id: couple.id, createdAt: couple.createdAt },
+    couple: publicCouple(couple),
     weights,
     poops,
     reactions,
+    anniversaries,
     serverTime: now,
   });
 }
@@ -429,7 +518,7 @@ async function readDashboard(user) {
 async function bootstrap(user) {
   if (!user.coupleId) {
     return response(200, {
-      viewer: publicUser(user),
+      viewer: publicUser(user, true),
       partner: null,
       couple: null,
       serverTime: Date.now(),
@@ -439,7 +528,7 @@ async function bootstrap(user) {
   if (dashboard.status === 409 && dashboard.data.code === "PAIRING_REQUIRED") {
     const refreshed = await getDocument("users", user.uid);
     return response(200, {
-      viewer: publicUser(refreshed),
+      viewer: publicUser(refreshed, true),
       partner: null,
       couple: null,
       serverTime: Date.now(),
@@ -451,15 +540,114 @@ async function bootstrap(user) {
 async function updateProfile(user, payload) {
   const nickname = cleanText(payload.nickname, 12);
   const avatar = cleanText(payload.avatar, 4);
+  const color = cleanText(payload.color, 7);
   if (nickname.length < 1) return jsonError("昵称至少需要一个字。", 400, "NICKNAME_REQUIRED");
   if (!avatarChoices.includes(avatar)) return jsonError("请选择农场里提供的头像。", 400, "AVATAR_INVALID");
+  if (color && !colorChoices.includes(color)) return jsonError("请选择农场里提供的代表色。", 400, "COLOR_INVALID");
   const updated = await updateDocument("users", user.uid, {
     nickname,
     avatar,
+    color: color || user.color,
     profileComplete: true,
     updatedAt: Date.now(),
   });
-  return response(200, { viewer: publicUser(updated) });
+  return response(200, { viewer: publicUser(updated, true) });
+}
+
+async function updateCoupleSettings(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const fields = { updatedAt: Date.now(), updatedBy: user.uid };
+
+  if (Object.prototype.hasOwnProperty.call(payload, "farmName")) {
+    const farmName = cleanText(payload.farmName, 16);
+    if (farmName.length < 2) return jsonError("农场名称至少需要两个字。", 400, "FARM_NAME_INVALID");
+    fields.farmName = farmName;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, "togetherSince")) {
+    const togetherSince = payload.togetherSince ? parseDateString(payload.togetherSince, false) : null;
+    if (payload.togetherSince && !togetherSince) {
+      return jsonError("在一起日期不正确，不能晚于今天。", 400, "TOGETHER_DATE_INVALID");
+    }
+    fields.togetherSince = togetherSince;
+  }
+
+  const updated = await updateDocument("couples", relationship.couple.id, fields);
+  return response(200, { couple: publicCouple(updated) });
+}
+
+async function updateReminderSettings(user, payload) {
+  const reminders = normalizeReminderSettings(payload.reminders || payload);
+  const updated = await updateDocument("users", user.uid, {
+    reminders,
+    updatedAt: Date.now(),
+  });
+  return response(200, { reminders: normalizeReminderSettings(updated.reminders) });
+}
+
+function anniversaryFields(payload) {
+  const title = cleanText(payload.title, 16);
+  const date = parseDateString(payload.date, true);
+  const icon = cleanText(payload.icon, 4) || "💞";
+  const note = cleanText(payload.note, 40);
+  if (title.length < 2) return { error: jsonError("纪念日名称至少需要两个字。", 400, "ANNIVERSARY_TITLE_INVALID") };
+  if (!date) return { error: jsonError("请选择正确的纪念日日期。", 400, "ANNIVERSARY_DATE_INVALID") };
+  if (!anniversaryIcons.includes(icon)) return { error: jsonError("请选择提供的纪念日图标。", 400, "ANNIVERSARY_ICON_INVALID") };
+  return {
+    title,
+    date,
+    icon,
+    note,
+    repeatsYearly: payload.repeatsYearly !== false,
+  };
+}
+
+async function addAnniversary(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const fields = anniversaryFields(payload);
+  if (fields.error) return fields.error;
+  const now = Date.now();
+  const anniversary = await addDocument("anniversaries", {
+    coupleId: relationship.couple.id,
+    ...fields,
+    createdBy: user.uid,
+    updatedBy: user.uid,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { anniversary });
+}
+
+async function updateAnniversary(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("anniversaries", id) : null;
+  if (!current || current.coupleId !== relationship.couple.id) {
+    return jsonError("没有找到这个纪念日。", 404, "ANNIVERSARY_NOT_FOUND");
+  }
+  const fields = anniversaryFields({ ...current, ...payload });
+  if (fields.error) return fields.error;
+  const anniversary = await updateDocument("anniversaries", id, {
+    ...fields,
+    updatedBy: user.uid,
+    updatedAt: Date.now(),
+  });
+  return response(200, { anniversary });
+}
+
+async function deleteAnniversary(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("anniversaries", id) : null;
+  if (!current || current.coupleId !== relationship.couple.id) {
+    return jsonError("没有找到这个纪念日。", 404, "ANNIVERSARY_NOT_FOUND");
+  }
+  await db.collection("anniversaries").doc(id).remove();
+  return response(200, { ok: true });
 }
 
 async function createInvite(user) {
@@ -512,8 +700,11 @@ async function acceptInvite(user, payload) {
   await setDocument("couples", coupleId, {
     memberUids: [creator.uid, user.uid],
     status: "active",
+    farmName: cleanText(`${creator.nickname}和${user.nickname}的小农场`, 16),
+    togetherSince: null,
     createdAt: now,
     updatedAt: now,
+    updatedBy: user.uid,
     endedAt: null,
     endedBy: null,
   });
@@ -587,6 +778,83 @@ async function addPoop(user, payload) {
   return response(201, { entry });
 }
 
+async function updateWeight(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("weight_entries", id) : null;
+  if (!current || current.ownerUid !== user.uid || current.coupleId !== relationship.couple.id) {
+    return jsonError("只能修改自己的体重记录。", 403, "RECORD_FORBIDDEN");
+  }
+  const weightKg = Number(payload.weightKg);
+  const recordedAt = parseOccurrence(payload.occurredAt);
+  if (!Number.isFinite(weightKg) || weightKg < 25 || weightKg > 250) {
+    return jsonError("请输入 25 到 250 千克之间的体重。", 400, "WEIGHT_INVALID");
+  }
+  if (!recordedAt) return jsonError("记录时间不正确，请重新选择。", 400, "TIME_INVALID");
+  const entry = await updateDocument("weight_entries", id, {
+    weightKg: Math.round(weightKg * 10) / 10,
+    recordedAt,
+    updatedAt: Date.now(),
+  });
+  return response(200, { entry });
+}
+
+async function updatePoop(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("poop_entries", id) : null;
+  if (!current || current.ownerUid !== user.uid || current.coupleId !== relationship.couple.id) {
+    return jsonError("只能修改自己的如厕记录。", 403, "RECORD_FORBIDDEN");
+  }
+  const occurredAt = parseOccurrence(payload.occurredAt);
+  if (!occurredAt) return jsonError("记录时间不正确，请重新选择。", 400, "TIME_INVALID");
+  const entry = await updateDocument("poop_entries", id, {
+    occurredAt,
+    updatedAt: Date.now(),
+  });
+  return response(200, { entry });
+}
+
+async function removeDocuments(name, documents) {
+  await Promise.all(documents.map((document) => db.collection(name).doc(document.id).remove()));
+}
+
+async function clearMyRecords(user) {
+  const [weights, poops, sentReactions, receivedReactions] = await Promise.all([
+    queryAll("weight_entries", { ownerUid: user.uid }, [], 500),
+    queryAll("poop_entries", { ownerUid: user.uid }, [], 500),
+    queryAll("reactions", { fromUserUid: user.uid }, [], 500),
+    queryAll("reactions", { toUserUid: user.uid }, [], 500),
+  ]);
+  const reactions = [...new Map([...sentReactions, ...receivedReactions].map((item) => [item.id, item])).values()];
+  await Promise.all([
+    removeDocuments("weight_entries", weights),
+    removeDocuments("poop_entries", poops),
+    removeDocuments("reactions", reactions),
+  ]);
+  return response(200, {
+    ok: true,
+    deleted: weights.length + poops.length + reactions.length,
+  });
+}
+
+async function deleteIdentity(user) {
+  await clearMyRecords(user);
+  if (user.coupleId) await unbind(user);
+  const [accounts, sessions] = await Promise.all([
+    queryAll("accounts", { uid: user.uid }, [], 20),
+    queryAll("sessions", { uid: user.uid }, [], 100),
+  ]);
+  await Promise.all([
+    removeDocuments("accounts", accounts),
+    removeDocuments("sessions", sessions),
+    db.collection("users").doc(user.uid).remove(),
+  ]);
+  return response(200, { ok: true });
+}
+
 async function react(user, payload) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
@@ -621,14 +889,23 @@ async function handleAction(user, action, payload) {
     case "bootstrap": return bootstrap(user);
     case "get-dashboard": return readDashboard(user);
     case "update-profile": return updateProfile(user, payload);
+    case "update-couple-settings": return updateCoupleSettings(user, payload);
+    case "update-reminders": return updateReminderSettings(user, payload);
     case "create-invite": return createInvite(user);
     case "accept-invite": return acceptInvite(user, payload);
     case "unbind": return unbind(user);
+    case "add-anniversary": return addAnniversary(user, payload);
+    case "update-anniversary": return updateAnniversary(user, payload);
+    case "delete-anniversary": return deleteAnniversary(user, payload);
     case "add-weight": return addWeight(user, payload);
     case "add-poop": return addPoop(user, payload);
+    case "update-weight": return updateWeight(user, payload);
+    case "update-poop": return updatePoop(user, payload);
     case "react": return react(user, payload);
     case "delete-weight": return removeOwnedDocument(user, "weight_entries", payload.id);
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
+    case "clear-my-records": return clearMyRecords(user);
+    case "delete-identity": return deleteIdentity(user);
     default: return jsonError("没有认出这个操作。", 405, "ACTION_UNKNOWN");
   }
 }
@@ -639,7 +916,7 @@ exports.main = async function main(event = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "formal-v1",
+      version: "0.2.0",
       serverTime: Date.now(),
     });
   }

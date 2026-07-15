@@ -1,5 +1,5 @@
 export default definePageConfig({
-  navigationBarTitleText: "我们俩的小日常",
+  navigationBarTitleText: "情侣小农场",
   enablePullDownRefresh: true,
   backgroundColor: "#fffaf0",
 });

@@ -179,7 +179,7 @@ function FullPageMessage({ title, detail, action }: { title: string; detail: str
     <main className="formal-access">
       <section className="formal-access-card">
         <div className="formal-logo" aria-hidden="true">♥</div>
-        <p className="formal-kicker">我们俩的小日常</p>
+        <p className="formal-kicker">情侣小农场</p>
         <h1>{title}</h1>
         <p>{detail}</p>
         {action && <button className="formal-primary" onClick={action}>重新连接</button>}
@@ -546,7 +546,7 @@ export default function FormalApp() {
   return (
     <main className="formal-dashboard">
       <header className="formal-topbar">
-        <div className="formal-brand"><span>♥</span><strong>我们俩的小日常</strong></div>
+        <div className="formal-brand"><span>♥</span><strong>情侣小农场</strong></div>
         <div className="formal-couple-chip"><span style={{ background: data.viewer.color }}>{data.viewer.avatar}</span><i>+</i><span style={{ background: data.partner.color }}>{data.partner.avatar}</span><b>{data.viewer.nickname} & {data.partner.nickname}</b></div>
         <div className="formal-top-actions"><button onClick={refreshDashboard} aria-label="刷新">↻</button><details><summary>设置</summary><div><button onClick={logout}>退出登录</button><button className="danger" onClick={unbind}>解除绑定</button></div></details></div>
       </header>

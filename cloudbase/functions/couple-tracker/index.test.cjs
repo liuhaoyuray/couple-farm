@@ -136,6 +136,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
+  assert.equal(result.data.version, "0.2.0");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -262,6 +263,103 @@ test("shares couple data while enforcing record ownership", async () => {
   assert.equal(ownerDelete.status, 200);
   const afterDelete = await invoke("browser-b", "get-dashboard", {}, secondToken);
   assert.equal(afterDelete.data.weights.length, 0);
+});
+
+test("supports editable profiles, farm settings, reminders and anniversaries", async () => {
+  const profile = await invoke("browser-a", "update-profile", {
+    nickname: "鸡包蛋改",
+    avatar: "🐻",
+    color: "#2f9e62",
+  }, firstToken);
+  assert.equal(profile.status, 200);
+  assert.equal(profile.data.viewer.nickname, "鸡包蛋改");
+  assert.equal(profile.data.viewer.color, "#2f9e62");
+
+  const couple = await invoke("browser-a", "update-couple-settings", {
+    farmName: "臭蛋幸福农场",
+    togetherSince: "2020-04-15",
+  }, firstToken);
+  assert.equal(couple.status, 200);
+  assert.equal(couple.data.couple.farmName, "臭蛋幸福农场");
+  assert.equal(couple.data.couple.togetherSince, "2020-04-15");
+
+  const reminders = await invoke("browser-a", "update-reminders", {
+    weight: { enabled: true, time: "07:30", days: [1, 3, 5] },
+    poop: { enabled: true, time: "21:00", days: [0, 1, 2, 3, 4, 5, 6] },
+    anniversary: { enabled: true, advanceDays: [14, 7, 1, 0] },
+  }, firstToken);
+  assert.equal(reminders.status, 200);
+  assert.equal(reminders.data.reminders.weight.time, "07:30");
+  assert.deepEqual(reminders.data.reminders.weight.days, [1, 3, 5]);
+
+  const created = await invoke("browser-a", "add-anniversary", {
+    title: "第一次约会",
+    date: "2020-05-20",
+    icon: "💞",
+    note: "一起吃了火锅",
+    repeatsYearly: true,
+  }, firstToken);
+  assert.equal(created.status, 201);
+  assert.equal(created.data.anniversary.title, "第一次约会");
+
+  const updated = await invoke("browser-b", "update-anniversary", {
+    id: created.data.anniversary.id,
+    title: "第一次正式约会",
+    date: "2020-05-21",
+    icon: "✨",
+    repeatsYearly: true,
+  }, secondToken);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.data.anniversary.title, "第一次正式约会");
+
+  const dashboard = await invoke("browser-b", "get-dashboard", {}, secondToken);
+  assert.equal(dashboard.data.couple.farmName, "臭蛋幸福农场");
+  assert.equal(dashboard.data.partner.nickname, "鸡包蛋改");
+  assert.equal(dashboard.data.anniversaries.length, 1);
+  assert.equal(dashboard.data.partner.reminders, undefined);
+  assert.ok(dashboard.data.viewer.reminders);
+
+  const removed = await invoke("browser-a", "delete-anniversary", { id: created.data.anniversary.id }, firstToken);
+  assert.equal(removed.status, 200);
+});
+
+test("allows owners to edit their records and clear their history", async () => {
+  const weight = await invoke("browser-a", "add-weight", {
+    weightKg: 67.2,
+    occurredAt: Date.now() - 60_000,
+  }, firstToken);
+  const editedWeight = await invoke("browser-a", "update-weight", {
+    id: weight.data.entry.id,
+    weightKg: 66.8,
+    occurredAt: Date.now(),
+  }, firstToken);
+  assert.equal(editedWeight.status, 200);
+  assert.equal(editedWeight.data.entry.weightKg, 66.8);
+
+  const poop = await invoke("browser-b", "add-poop", { occurredAt: Date.now() - 60_000 }, secondToken);
+  const forbidden = await invoke("browser-a", "update-poop", {
+    id: poop.data.entry.id,
+    occurredAt: Date.now(),
+  }, firstToken);
+  assert.equal(forbidden.status, 403);
+
+  const cleared = await invoke("browser-a", "clear-my-records", {}, firstToken);
+  assert.equal(cleared.status, 200);
+  assert.ok(cleared.data.deleted >= 1);
+  const dashboard = await invoke("browser-b", "get-dashboard", {}, secondToken);
+  assert.equal(dashboard.data.weights.filter((entry) => entry.ownerUid === editedWeight.data.entry.ownerUid).length, 0);
+});
+
+test("can delete and recreate a mini-program identity without credentials", async () => {
+  const caller = { uid: "platform-delete-user", openId: "openid-delete", appId: "wx-app" };
+  const initial = await invoke(caller, "bootstrap", {}, undefined, "mini");
+  await invoke(caller, "update-profile", { nickname: "待注销", avatar: "🐱" }, undefined, "mini");
+  const deleted = await invoke(caller, "delete-identity", {}, undefined, "mini");
+  assert.equal(deleted.status, 200);
+  const recreated = await invoke(caller, "bootstrap", {}, undefined, "mini");
+  assert.equal(recreated.status, 200);
+  assert.equal(recreated.data.viewer.uid, initial.data.viewer.uid);
+  assert.equal(recreated.data.viewer.profileComplete, false);
 });
 
 test("ending a relationship immediately isolates the archived records", async () => {

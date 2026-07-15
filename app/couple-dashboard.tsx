@@ -505,7 +505,7 @@ export default function CoupleDashboard() {
       <header className="topbar">
         <a className="brand" href="#top" aria-label="回到页面顶部">
           <span className="pixel-heart" aria-hidden="true">♥</span>
-          <span>我们俩的小日常</span>
+          <span>情侣小农场</span>
         </a>
 
         <div className="perspective-switch" aria-label="查看视角">

@@ -1,4 +1,26 @@
-# vinext-starter
+# 情侣小农场
+
+情侣小农场是一个双人共享生活记录应用，同时提供中国大陆 H5 和微信小程序。小程序使用微信身份自动注册登录，双方通过一次性配对码绑定；H5 使用独立账号密码登录。两个客户端共用腾讯云 CloudBase 云函数与数据库。
+
+## 0.2.0 功能
+
+- 体重、每日如厕记录与双方共享时间线
+- 7/30/90 天体重曲线和最近 7 天如厕统计
+- 微信身份自动注册登录、一次性配对码绑定
+- 修改昵称、头像、代表色、农场名称和相恋日期
+- 相恋天数、纪念里程碑和自定义纪念日
+- 小程序内提醒与手机系统日历重复提醒
+- 本人记录编辑删除、清空本人数据、解绑和注销身份
+
+## 发布目标
+
+- 腾讯云 CloudBase：中国大陆 H5、云函数和数据库
+- 微信公众平台：由 GitHub Actions 上传小程序开发版本
+- ChatGPT Sites：海外备用 H5
+
+发布所需密钥仅存放在 GitHub Actions Secrets 中，不能写入代码或聊天。
+
+## 原始站点运行说明
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
