@@ -171,7 +171,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.6.0");
+  assert.equal(result.data.version, "0.7.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -179,7 +179,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.6.0");
+  assert.equal(result.data.version, "0.7.0");
 });
 
 test("verifies the private village schema without a user session", async () => {
@@ -187,7 +187,16 @@ test("verifies the private village schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "village");
-  assert.equal(result.data.version, "0.6.0");
+  assert.equal(result.data.version, "0.7.0");
+});
+
+test("verifies the partner notification schema without a user session", async () => {
+  const result = await invoke(null, "notification-health");
+  assert.equal(result.status, 200);
+  assert.equal(result.data.ok, true);
+  assert.equal(result.data.service, "notifications");
+  assert.equal(result.data.version, "0.7.0");
+  assert.equal(result.data.templateConfigured, true);
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -332,6 +341,69 @@ test("shares couple data while enforcing record ownership", async () => {
   assert.equal(afterDelete.data.weights.length, 0);
 });
 
+test("delivers partner activity to the inbox and consumes one-time WeChat reminder grants", async () => {
+  const initialCenter = await invoke("browser-b", "notification-center", {}, secondToken);
+  assert.equal(initialCenter.status, 200);
+  assert.ok(initialCenter.data.items.some((item) => item.type === "weight"));
+  assert.ok(initialCenter.data.unreadCount >= 1);
+
+  const readAll = await invoke("browser-b", "mark-notification-read", { all: true }, secondToken);
+  assert.equal(readAll.status, 200);
+  const quietOff = await invoke("browser-b", "update-notification-preferences", {
+    inApp: true,
+    wechat: true,
+    quietHours: { enabled: false, start: "23:00", end: "08:00" },
+    events: { health: true, interaction: true, tasks: true, rituals: true, village: true },
+  }, secondToken);
+  assert.equal(quietOff.status, 200);
+  assert.equal(quietOff.data.preferences.quietHours.enabled, false);
+
+  const miniCaller = { uid: "browser-b", openId: "openid-b", appId: "wx-app" };
+  const grant = async () => invoke(
+    miniCaller,
+    "save-subscription-consent",
+    { templateKey: "partner_activity", templateId: memoTemplateId, result: "accept" },
+    secondToken,
+    "mini",
+  );
+
+  const sentBefore = sentSubscriptionMessages.length;
+  assert.equal((await grant()).status, 201);
+  const weight = await invoke("browser-a", "add-weight", {
+    weightKg: 68.1,
+    occurredAt: Date.now(),
+  }, firstToken);
+  assert.equal(weight.status, 201);
+  assert.equal(sentSubscriptionMessages.length, sentBefore + 1);
+  assert.equal(sentSubscriptionMessages.at(-1).templateId, memoTemplateId);
+  assert.match(sentSubscriptionMessages.at(-1).data.thing2.value, /称重打卡/);
+  assert.deepEqual(sentSubscriptionMessages.at(-1).data.thing17, { value: "鸡包蛋" });
+
+  assert.equal((await grant()).status, 201);
+  const liked = await invoke("browser-a", "react", { kind: "like" }, firstToken);
+  assert.equal(liked.status, 201);
+  assert.equal(sentSubscriptionMessages.length, sentBefore + 2);
+  assert.match(sentSubscriptionMessages.at(-1).data.thing2.value, /点了个赞/);
+
+  assert.equal((await grant()).status, 201);
+  const nudged = await invoke("browser-a", "send-nudge", { preset: "hug" }, firstToken);
+  assert.equal(nudged.status, 201);
+  assert.equal(sentSubscriptionMessages.length, sentBefore + 3);
+  assert.match(sentSubscriptionMessages.at(-1).data.thing2.value, /抱抱/);
+  const duplicateNudge = await invoke("browser-a", "send-nudge", { preset: "hug" }, firstToken);
+  assert.equal(duplicateNudge.status, 429);
+  assert.equal(duplicateNudge.data.code, "NUDGE_RATE_LIMITED");
+
+  const center = await invoke("browser-b", "notification-center", {}, secondToken);
+  assert.equal(center.status, 200);
+  assert.ok(center.data.items.some((item) => item.type === "reaction" && item.wechatStatus === "sent"));
+  assert.ok(center.data.items.some((item) => item.type === "nudge" && item.wechatStatus === "sent"));
+  assert.equal(center.data.notification.availableQuota, 0);
+  const dashboard = await invoke("browser-b", "get-dashboard", {}, secondToken);
+  assert.equal(dashboard.data.notificationSummary.unreadCount, center.data.unreadCount);
+  assert.ok(dashboard.data.weeklyPulse.cheers >= 1);
+});
+
 test("supports editable profiles, farm settings, reminders and anniversaries", async () => {
   const profile = await invoke("browser-a", "update-profile", {
     nickname: "鸡包蛋改",
@@ -445,6 +517,7 @@ test("supports a shared notebook with assignments, recurring tasks and reminder 
   const dashboard = await invoke("browser-a", "get-dashboard", {}, firstToken);
   assert.ok(dashboard.data.sharedMemos.some((item) => item.id === secondDone.data.nextItem.id));
 
+  const reminderMessagesBefore = sentSubscriptionMessages.length;
   const subscription = await invoke(
     { uid: "browser-a", openId: "openid-a", appId: "wx-app" },
     "save-subscription-consent",
@@ -472,12 +545,12 @@ test("supports a shared notebook with assignments, recurring tasks and reminder 
   const sweep = await main({ Type: "Timer", triggerName: "couple-reminders" });
   assert.equal(sweep.status, 200);
   assert.equal(sweep.data.sent, 1);
-  assert.equal(sentSubscriptionMessages.length, 1);
-  assert.equal(sentSubscriptionMessages[0].templateId, memoTemplateId);
-  assert.deepEqual(sentSubscriptionMessages[0].data.thing2, { value: "出发去看电影" });
-  assert.deepEqual(sentSubscriptionMessages[0].data.thing10, { value: "幸福电影院" });
-  assert.deepEqual(sentSubscriptionMessages[0].data.thing17, { value: "鸡包蛋改" });
-  assert.match(sentSubscriptionMessages[0].data.time6.value, /^\d{4}年\d{2}月\d{2}日 \d{2}:\d{2}$/);
+  assert.equal(sentSubscriptionMessages.length, reminderMessagesBefore + 1);
+  assert.equal(sentSubscriptionMessages.at(-1).templateId, memoTemplateId);
+  assert.deepEqual(sentSubscriptionMessages.at(-1).data.thing2, { value: "出发去看电影" });
+  assert.deepEqual(sentSubscriptionMessages.at(-1).data.thing10, { value: "幸福电影院" });
+  assert.deepEqual(sentSubscriptionMessages.at(-1).data.thing17, { value: "鸡包蛋改" });
+  assert.match(sentSubscriptionMessages.at(-1).data.time6.value, /^\d{4}年\d{2}月\d{2}日 \d{2}:\d{2}$/);
 });
 
 test("supports daily couple rituals, restaurant decisions and membership trials", async () => {
@@ -692,6 +765,10 @@ test("supports a moderated community feed with images, follows, likes, comments 
     content: "报名，我们也去！",
   }, firstToken, "mini");
   assert.equal(villageComment.status, 201);
+  const villageNotifications = await invoke("browser-c", "notification-center", {}, thirdToken);
+  assert.equal(villageNotifications.status, 200);
+  assert.ok(villageNotifications.data.items.some((item) => item.type === "village_like"));
+  assert.ok(villageNotifications.data.items.some((item) => item.type === "village_comment"));
 
   fakeCloudbase.setReadFailure("community_comments", true);
   const degradedVillage = await invoke(firstMiniCaller, "village-feed", {}, firstToken, "mini");

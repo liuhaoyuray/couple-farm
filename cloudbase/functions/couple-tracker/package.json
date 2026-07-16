@@ -1,6 +1,6 @@
 {
   "name": "couple-tracker",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "main": "index.js",
   "dependencies": {

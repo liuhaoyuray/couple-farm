@@ -261,7 +261,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
   return (
     <>
       <View className="page-heading notebook-heading">
-        <Text className="kicker">我们俩的小田地 · 0.6.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
         <Text className="title">共同小本本</Text>
         <Text className="description">把约会、采购、家务和那些“别忘啦”放在同一个地方。</Text>
       </View>
@@ -280,7 +280,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
       </View>
 
       <View className="panel subscription-card">
-        <View><Text className="kicker">微信订阅提醒</Text><Text className="subtitle">当前可用 {data?.notification.availableQuota || 0} 次</Text><Text className="description small">微信不允许普通小程序静默永久推送；每次点击授权可获得一次发送额度，手机日历可作为长期提醒。</Text></View>
+        <View><Text className="kicker">微信订阅提醒</Text><Text className="subtitle">当前可用 {data?.notification.availableQuota || 0} 次</Text><Text className="description small">提醒次数与“情侣消息盒子”共用；每次微信授权可发送一次，手机日历可作为长期提醒。</Text></View>
         <Button className="secondary" onClick={requestWechatReminder}>{data?.notification.configured ? "再授权 1 次" : "查看接入状态"}</Button>
       </View>
 

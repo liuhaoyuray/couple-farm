@@ -205,7 +205,7 @@ export default function TogetherPanel({
   return (
     <>
       <View className="page-heading together-heading">
-        <Text className="kicker">我们俩的小田地 · 0.6.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
         <Text className="title">今天，一起做点什么</Text>
         <Text className="description">每天一分钟对个暗号，吃什么也不用再互相说“随便”。</Text>
       </View>

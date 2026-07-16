@@ -1,7 +1,7 @@
 {
   "miniprogramRoot": "dist/",
   "projectname": "couple-farm",
-  "description": "我们俩的小田地 - 微信小程序 0.6.0 熟人村庄版",
+  "description": "我们俩的小田地 - 微信小程序 0.7.0 情侣消息版",
   "appid": "wxa777aca89186974c",
   "libVersion": "3.15.2",
   "setting": {

@@ -37,6 +37,7 @@ const COLLECTIONS = [
   "shared_memos",
   "notification_subscriptions",
   "notification_deliveries",
+  "in_app_notifications",
   "villages",
   "village_members",
   "village_invites",
@@ -83,8 +84,55 @@ const optionBudgets = ["¥", "¥¥", "¥¥¥"];
 const sharedMemoKinds = ["memo", "task", "event"];
 const sharedMemoCategories = ["daily", "date", "home", "shopping", "important", "other"];
 const sharedMemoRecurrences = ["none", "daily", "weekly", "monthly"];
-const notificationTemplateKeys = ["shared_memo", "health_reminder", "anniversary"];
+const notificationTemplateKeys = ["shared_memo", "partner_activity", "health_reminder", "anniversary"];
 const WECHAT_MEMO_TEMPLATE_ID = "7yUYdsTH-aJGkSxaFaMu7LLxkGTChtD6WoJVg6LGcuE";
+const notificationPreferenceKeys = ["health", "interaction", "tasks", "rituals", "village"];
+const notificationPreferenceByType = {
+  weight: "health",
+  poop: "health",
+  reaction: "interaction",
+  nudge: "interaction",
+  memo_created: "tasks",
+  memo_completed: "tasks",
+  decision_created: "tasks",
+  decision_resolved: "tasks",
+  mood_checkin: "rituals",
+  daily_answer: "rituals",
+  village_like: "village",
+  village_comment: "village",
+};
+const defaultNotificationPreferences = {
+  inApp: true,
+  wechat: true,
+  quietHours: { enabled: true, start: "23:00", end: "08:00" },
+  events: {
+    health: true,
+    interaction: true,
+    tasks: true,
+    rituals: true,
+    village: true,
+  },
+};
+const activityPushCooldowns = {
+  weight: 30 * 60 * 1000,
+  poop: 60 * 60 * 1000,
+  reaction: 5 * 60 * 1000,
+  nudge: 15 * 60 * 1000,
+  memo_created: 5 * 60 * 1000,
+  memo_completed: 5 * 60 * 1000,
+  decision_created: 5 * 60 * 1000,
+  decision_resolved: 5 * 60 * 1000,
+  mood_checkin: 30 * 60 * 1000,
+  daily_answer: 30 * 60 * 1000,
+};
+const nudgePresets = {
+  weight: { icon: "⚖️", title: "称重小提醒", body: "体重秤在等你来打卡啦" },
+  poop: { icon: "🚽", title: "记录小提醒", body: "今天的如厕记录别忘啦" },
+  task: { icon: "✅", title: "待办小提醒", body: "共同小本本里还有事情等你" },
+  water: { icon: "🥤", title: "喝水小提醒", body: "先喝口水，再继续忙吧" },
+  rest: { icon: "🌙", title: "休息小提醒", body: "别太累啦，记得早点休息" },
+  hug: { icon: "🤗", title: "抱抱派送中", body: "你的伴侣给你送来一个抱抱" },
+};
 const VILLAGE_MEMBER_LIMIT = 24;
 const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
@@ -102,6 +150,26 @@ const defaultReminderSettings = {
   poop: { enabled: false, time: "20:30", days: [0, 1, 2, 3, 4, 5, 6] },
   anniversary: { enabled: true, advanceDays: [7, 1, 0] },
 };
+
+function normalizeNotificationPreferences(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const quietHours = source.quietHours && typeof source.quietHours === "object" ? source.quietHours : {};
+  const events = source.events && typeof source.events === "object" ? source.events : {};
+  const normalizedEvents = {};
+  for (const key of notificationPreferenceKeys) {
+    normalizedEvents[key] = events[key] !== false;
+  }
+  return {
+    inApp: source.inApp !== false,
+    wechat: source.wechat !== false,
+    quietHours: {
+      enabled: quietHours.enabled !== false,
+      start: normalizeClockTime(quietHours.start, defaultNotificationPreferences.quietHours.start),
+      end: normalizeClockTime(quietHours.end, defaultNotificationPreferences.quietHours.end),
+    },
+    events: normalizedEvents,
+  };
+}
 
 function response(status, data) {
   return { status, data };
@@ -588,7 +656,10 @@ function publicUser(user, includePrivate = false) {
     coupleId: user.coupleId || null,
     createdAt: user.createdAt,
   };
-  if (includePrivate) result.reminders = normalizeReminderSettings(user.reminders);
+  if (includePrivate) {
+    result.reminders = normalizeReminderSettings(user.reminders);
+    result.notificationPreferences = normalizeNotificationPreferences(user.notificationPreferences);
+  }
   return result;
 }
 
@@ -606,6 +677,36 @@ function publicCouple(couple) {
   };
 }
 
+function weeklyCouplePulse(couple, weights, poops, reactions, memos, now = Date.now()) {
+  const since = now - 7 * DAY;
+  const activityDays = new Map(couple.memberUids.map((uid) => [uid, new Set()]));
+  for (const item of weights) {
+    if (Number(item.recordedAt) >= since && activityDays.has(item.ownerUid)) {
+      activityDays.get(item.ownerUid).add(dateKeyUtc(item.recordedAt));
+    }
+  }
+  for (const item of poops) {
+    if (Number(item.occurredAt) >= since && activityDays.has(item.ownerUid)) {
+      activityDays.get(item.ownerUid).add(dateKeyUtc(item.occurredAt));
+    }
+  }
+  const [firstDays = new Set(), secondDays = new Set()] = [...activityDays.values()];
+  const jointDays = [...firstDays].filter((day) => secondDays.has(day)).length;
+  const cheers = reactions.filter((item) => Number(item.createdAt) >= since).length;
+  const completedTasks = memos.filter((item) => (
+    item.status === "completed" && Number(item.completedAt) >= since
+  )).length;
+  const score = Math.min(100, jointDays * 12 + Math.min(cheers, 10) * 3 + Math.min(completedTasks, 6) * 7);
+  const suggestion = jointDays === 0
+    ? "今天一起完成一次小打卡，点亮本周第一格。"
+    : cheers === 0
+      ? "给对方送个赞或抱抱，让记录也有回应。"
+      : completedTasks === 0
+        ? "在共同小本本完成一件小事，本周会更有成就感。"
+        : "你们这周配合得不错，继续保持这份小默契。";
+  return { jointDays, cheers, completedTasks, score, suggestion };
+}
+
 async function getOrCreateUser(identity) {
   let user = await getDocument("users", identity.uid);
   if (user) return user;
@@ -621,6 +722,7 @@ async function getOrCreateUser(identity) {
     coupleId: null,
     authProvider: identity.authProvider || "password",
     reminders: normalizeReminderSettings(),
+    notificationPreferences: normalizeNotificationPreferences(),
     createdAt: now,
     updatedAt: now,
   };
@@ -819,15 +921,16 @@ async function readSoloDashboard(user) {
     reactions: [],
     anniversaries: [],
     sharedMemos: [],
+    notificationSummary: { unreadCount: 0, availableQuota: 0 },
     serverTime: now,
   });
 }
 
 async function recordSpaceForUser(user) {
-  if (!user.coupleId) return { id: soloSpaceId(user.uid), couple: null };
+  if (!user.coupleId) return { id: soloSpaceId(user.uid), couple: null, partner: null };
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship;
-  return { id: relationship.couple.id, couple: relationship.couple };
+  return { id: relationship.couple.id, couple: relationship.couple, partner: relationship.partner };
 }
 
 async function readDashboard(user) {
@@ -839,7 +942,7 @@ async function readDashboard(user) {
     migrateSoloRecords(partner.uid, couple.id),
   ]);
   const now = Date.now();
-  const [weights, poops, reactions, anniversaries, sharedMemoDocuments] = await Promise.all([
+  const [weights, poops, reactions, anniversaries, sharedMemoDocuments, notificationSummaryData] = await Promise.all([
     queryAll(
       "weight_entries",
       { coupleId: couple.id, recordedAt: command.gte(now - 190 * DAY) },
@@ -865,6 +968,7 @@ async function readDashboard(user) {
       50,
     ),
     queryAll("shared_memos", { coupleId: couple.id }, [], 120),
+    notificationSummary(user, couple.id),
   ]);
 
   const sharedMemos = sharedMemoDocuments
@@ -887,6 +991,8 @@ async function readDashboard(user) {
     reactions,
     anniversaries,
     sharedMemos,
+    weeklyPulse: weeklyCouplePulse(couple, weights, poops, reactions, sharedMemoDocuments, now),
+    notificationSummary: notificationSummaryData,
     serverTime: now,
   });
 }
@@ -1141,6 +1247,16 @@ async function createSharedMemo(user, payload) {
     createdAt: now,
     updatedAt: now,
   });
+  if (fields.assignee === "both" || fields.assignee === relationship.partner.uid) {
+    await bestEffortPartnerNotification(user, relationship, {
+      type: "memo_created",
+      icon: fields.kind === "event" ? "📅" : fields.kind === "task" ? "✅" : "📝",
+      title: fields.assignee === relationship.partner.uid ? "有一件事交给你" : "共同小本本有新内容",
+      body: `${cleanText(user.nickname, 10)} 新增了：${cleanText(fields.title, 20)}`,
+      targetTab: "notebook",
+      referenceId: memo.id,
+    });
+  }
   return response(201, { item: publicSharedMemo(memo, relationship.couple) });
 }
 
@@ -1179,7 +1295,8 @@ async function toggleSharedMemo(user, payload) {
   if (current.status === "completed" && current.recurrence !== "none") {
     return jsonError("重复事项已生成下一次，不需要撤销。", 409, "MEMO_RECURRENCE_ADVANCED");
   }
-  if (completedBy.has(user.uid)) completedBy.delete(user.uid);
+  const wasCompletedByViewer = completedBy.has(user.uid);
+  if (wasCompletedByViewer) completedBy.delete(user.uid);
   else completedBy.add(user.uid);
   const completedByUids = [...completedBy].filter((uid) => relationship.couple.memberUids.includes(uid));
   const requiredUids = assignee === "both" ? relationship.couple.memberUids : [assignee];
@@ -1216,6 +1333,16 @@ async function toggleSharedMemo(user, payload) {
     delete nextFields.reminderSentToUids;
     nextItem = await setDocument("shared_memos", nextId, nextFields);
   }
+  if (!wasCompletedByViewer) {
+    await bestEffortPartnerNotification(user, relationship, {
+      type: "memo_completed",
+      icon: "✅",
+      title: completed ? "共同事项完成啦" : "伴侣完成了一小步",
+      body: `${cleanText(user.nickname, 10)} 完成了：${cleanText(current.title, 20)}`,
+      targetTab: "notebook",
+      referenceId: `${current.id}:${user.uid}`,
+    });
+  }
   return response(200, {
     item: publicSharedMemo(updated, relationship.couple),
     nextItem: nextItem ? publicSharedMemo(nextItem, relationship.couple) : null,
@@ -1246,7 +1373,7 @@ async function saveSubscriptionConsent(user, payload, requestContext) {
   if (!notificationTemplateKeys.includes(templateKey) || !templateId) {
     return jsonError("订阅消息模板不正确。", 400, "SUBSCRIPTION_TEMPLATE_INVALID");
   }
-  if (templateKey === "shared_memo" && templateId !== WECHAT_MEMO_TEMPLATE_ID) {
+  if (["shared_memo", "partner_activity"].includes(templateKey) && templateId !== WECHAT_MEMO_TEMPLATE_ID) {
     return jsonError("日程提醒模板已经更新，请刷新后重新授权。", 409, "SUBSCRIPTION_TEMPLATE_OUTDATED");
   }
   if (!requestContext?.platformCaller?.openId || requestContext.channel !== "mini") {
@@ -1267,7 +1394,7 @@ async function saveSubscriptionConsent(user, payload, requestContext) {
     createdAt: now,
     updatedAt: now,
   });
-  return response(201, { ok: true, remainingQuota: 1 });
+  return response(201, { ok: true, remainingQuota: await notificationQuota(user.uid) });
 }
 
 function formatWechatReminderTime(timestamp) {
@@ -1278,6 +1405,321 @@ function formatWechatReminderTime(timestamp) {
   const hour = String(date.getUTCHours()).padStart(2, "0");
   const minute = String(date.getUTCMinutes()).padStart(2, "0");
   return `${year}年${month}月${day}日 ${hour}:${minute}`;
+}
+
+function chinaClockMinutes(timestamp = Date.now()) {
+  const date = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
+  return date.getUTCHours() * 60 + date.getUTCMinutes();
+}
+
+function clockValueMinutes(value) {
+  const [hour, minute] = normalizeClockTime(value, "00:00").split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function isNotificationQuietTime(preferences, timestamp = Date.now()) {
+  const quiet = normalizeNotificationPreferences(preferences).quietHours;
+  if (!quiet.enabled) return false;
+  const current = chinaClockMinutes(timestamp);
+  const start = clockValueMinutes(quiet.start);
+  const end = clockValueMinutes(quiet.end);
+  if (start === end) return true;
+  return start < end ? current >= start && current < end : current >= start || current < end;
+}
+
+function publicNotification(item) {
+  return {
+    id: item.id,
+    type: cleanText(item.type, 32),
+    icon: cleanText(item.icon, 4) || "💌",
+    title: cleanText(item.title, 30),
+    body: cleanText(item.body, 80),
+    actorUid: item.actorUid,
+    actorNickname: cleanText(item.actorNickname, 20) || "我的伴侣",
+    targetTab: cleanText(item.targetTab, 24) || "farm",
+    referenceId: cleanText(item.referenceId, 128) || null,
+    read: Boolean(item.readAt),
+    readAt: Number(item.readAt) || null,
+    wechatStatus: cleanText(item.wechatStatus, 24) || "not_requested",
+    createdAt: Number(item.createdAt) || Date.now(),
+  };
+}
+
+async function notificationQuota(userUid) {
+  const grants = await queryAll("notification_subscriptions", { userUid }, [], 100);
+  return grants.filter((grant) => (
+    grant.active !== false
+    && grant.templateId === WECHAT_MEMO_TEMPLATE_ID
+    && Number(grant.remainingQuota) > 0
+    && grant.openId
+  )).length;
+}
+
+async function availableNotificationGrant(userUid) {
+  const grants = await queryAll("notification_subscriptions", { userUid }, [], 100);
+  return grants
+    .filter((item) => item.active !== false)
+    .filter((item) => item.templateId === WECHAT_MEMO_TEMPLATE_ID)
+    .filter((item) => Number(item.remainingQuota) > 0 && item.openId)
+    .sort((left, right) => Number(left.acceptedAt) - Number(right.acceptedAt))[0] || null;
+}
+
+async function activityPushRateLimited(notification) {
+  const cooldown = Number(activityPushCooldowns[notification.type] || 0);
+  if (!cooldown) return false;
+  const recent = await queryAll("in_app_notifications", {
+    recipientUid: notification.recipientUid,
+    type: notification.type,
+  }, [], 80);
+  return recent.some((item) => (
+    item.id !== notification.id
+    && item.wechatStatus === "sent"
+    && Number(item.wechatSentAt) > Date.now() - cooldown
+  ));
+}
+
+async function sendActivityNotification(notification, recipient, preferences, source = "event") {
+  if (!normalizeNotificationPreferences(preferences).wechat) return { status: "disabled" };
+  if (isNotificationQuietTime(preferences)) return { status: "pending" };
+  if (await activityPushRateLimited(notification)) return { status: "rate_limited" };
+  const grant = await availableNotificationGrant(recipient.uid);
+  if (!grant) return { status: "no_quota" };
+
+  const deliveryId = `activity_delivery_${sha256(`${notification.id}:${WECHAT_MEMO_TEMPLATE_ID}`).slice(0, 44)}`;
+  const existing = await getDocument("notification_deliveries", deliveryId);
+  if (existing?.status === "sent") return { status: "already_sent", sentAt: existing.sentAt };
+  const now = Date.now();
+  await setDocument("notification_deliveries", deliveryId, {
+    notificationId: notification.id,
+    coupleId: notification.coupleId,
+    userUid: recipient.uid,
+    grantId: grant.id,
+    templateId: WECHAT_MEMO_TEMPLATE_ID,
+    status: "sending",
+    source: cleanText(source, 32),
+    attempts: Number(existing?.attempts || 0) + 1,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+
+  try {
+    await wxCloud.openapi.subscribeMessage.send({
+      touser: grant.openId,
+      templateId: WECHAT_MEMO_TEMPLATE_ID,
+      page: "pages/index/index",
+      miniprogramState: reminderMiniProgramState(),
+      lang: "zh_CN",
+      data: {
+        thing2: { value: cleanText(notification.body || notification.title, 20) || "伴侣有一条新动态" },
+        time6: { value: formatWechatReminderTime(notification.createdAt) },
+        thing10: { value: cleanText(notification.location, 20) || "我们俩的小田地" },
+        thing17: { value: cleanText(notification.actorNickname, 20) || "我的伴侣" },
+      },
+    });
+    const sentAt = Date.now();
+    await Promise.all([
+      updateDocument("notification_deliveries", deliveryId, {
+        status: "sent",
+        sentAt,
+        updatedAt: sentAt,
+      }),
+      updateDocument("notification_subscriptions", grant.id, {
+        remainingQuota: Math.max(0, Number(grant.remainingQuota) - 1),
+        active: Number(grant.remainingQuota) > 1,
+        lastUsedAt: sentAt,
+        updatedAt: sentAt,
+      }),
+    ]);
+    return { status: "sent", sentAt };
+  } catch (error) {
+    const failedAt = Date.now();
+    await Promise.all([
+      updateDocument("notification_deliveries", deliveryId, {
+        status: "failed",
+        error: errorDetails(error),
+        updatedAt: failedAt,
+      }),
+      updateDocument("notification_subscriptions", grant.id, {
+        remainingQuota: 0,
+        active: false,
+        lastFailedAt: failedAt,
+        updatedAt: failedAt,
+      }),
+    ]);
+    console.warn("partner activity notification delivery failed", {
+      notificationId: notification.id,
+      ...errorDetails(error),
+    });
+    return { status: "failed" };
+  }
+}
+
+async function createNotificationForRecipient(user, couple, recipient, details) {
+  if (!recipient || recipient.uid === user.uid) return null;
+  const type = cleanText(details.type, 32);
+  const preferenceKey = notificationPreferenceByType[type];
+  const preferences = normalizeNotificationPreferences(recipient.notificationPreferences);
+  if (!preferenceKey || preferences.events[preferenceKey] === false) return null;
+  const referenceId = cleanText(details.referenceId, 128) || randomId(8);
+  const id = `notice_${sha256(`${couple.id}:${recipient.uid}:${type}:${referenceId}`).slice(0, 44)}`;
+  const existing = await getDocument("in_app_notifications", id);
+  if (existing) return publicNotification(existing);
+  const now = Date.now();
+  const notification = await setDocument("in_app_notifications", id, {
+    coupleId: couple.id,
+    recipientUid: recipient.uid,
+    actorUid: user.uid,
+    actorNickname: cleanText(user.nickname, 20),
+    type,
+    icon: cleanText(details.icon, 4) || "💌",
+    title: cleanText(details.title, 30),
+    body: cleanText(details.body, 80),
+    location: cleanText(details.location || couple.farmName, 20),
+    targetTab: cleanText(details.targetTab, 24) || "farm",
+    referenceId,
+    visible: preferences.inApp,
+    readAt: preferences.inApp ? null : now,
+    wechatStatus: preferences.wechat ? "preparing" : "disabled",
+    createdAt: now,
+    updatedAt: now,
+  });
+  if (preferences.wechat) {
+    const delivery = await sendActivityNotification(notification, recipient, preferences, "partner-event");
+    await updateDocument("in_app_notifications", id, {
+      wechatStatus: delivery.status,
+      wechatSentAt: delivery.sentAt || null,
+      updatedAt: Date.now(),
+    });
+  }
+  return publicNotification(await getDocument("in_app_notifications", id));
+}
+
+async function createPartnerNotification(user, relationship, details) {
+  return createNotificationForRecipient(user, relationship.couple, relationship.partner, details);
+}
+
+async function bestEffortPartnerNotification(user, relationship, details) {
+  try {
+    return await createPartnerNotification(user, relationship, details);
+  } catch (error) {
+    console.warn("partner notification skipped", { type: details.type, ...errorDetails(error) });
+    return null;
+  }
+}
+
+async function bestEffortNotificationsForCouple(user, couple, details) {
+  try {
+    const recipients = await Promise.all((couple.memberUids || [])
+      .filter((uid) => uid !== user.uid)
+      .map((uid) => getDocument("users", uid)));
+    return await Promise.all(recipients
+      .filter(Boolean)
+      .map((recipient) => createNotificationForRecipient(user, couple, recipient, details)));
+  } catch (error) {
+    console.warn("couple notification skipped", { type: details.type, ...errorDetails(error) });
+    return [];
+  }
+}
+
+async function notificationSummary(user, coupleId) {
+  if (!coupleId) return { unreadCount: 0, availableQuota: 0 };
+  const [documents, availableQuota] = await Promise.all([
+    queryAll("in_app_notifications", { recipientUid: user.uid, coupleId }, [], 120),
+    notificationQuota(user.uid),
+  ]);
+  return {
+    unreadCount: documents.filter((item) => item.visible !== false && !item.readAt).length,
+    availableQuota,
+  };
+}
+
+async function notificationCenter(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const [documents, availableQuota] = await Promise.all([
+    queryAll("in_app_notifications", {
+      recipientUid: user.uid,
+      coupleId: relationship.couple.id,
+    }, [], 200),
+    notificationQuota(user.uid),
+  ]);
+  const items = documents
+    .filter((item) => item.visible !== false)
+    .sort((left, right) => Number(right.createdAt) - Number(left.createdAt))
+    .slice(0, 80)
+    .map(publicNotification);
+  return response(200, {
+    items,
+    unreadCount: items.filter((item) => !item.read).length,
+    notification: {
+      availableQuota,
+      configured: true,
+      templateId: WECHAT_MEMO_TEMPLATE_ID,
+    },
+    preferences: normalizeNotificationPreferences(user.notificationPreferences),
+    serverTime: Date.now(),
+  });
+}
+
+async function markNotificationRead(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const now = Date.now();
+  if (payload.all === true) {
+    const documents = await queryAll("in_app_notifications", {
+      recipientUid: user.uid,
+      coupleId: relationship.couple.id,
+    }, [], 200);
+    await Promise.all(documents
+      .filter((item) => item.visible !== false && !item.readAt)
+      .map((item) => updateDocument("in_app_notifications", item.id, { readAt: now, updatedAt: now })));
+    return response(200, { ok: true, updated: documents.filter((item) => !item.readAt).length });
+  }
+  const id = cleanText(payload.id, 128);
+  const item = id ? await getDocument("in_app_notifications", id) : null;
+  if (!item || item.recipientUid !== user.uid || item.coupleId !== relationship.couple.id) {
+    return jsonError("没有找到这条消息。", 404, "NOTIFICATION_NOT_FOUND");
+  }
+  await updateDocument("in_app_notifications", id, { readAt: now, updatedAt: now });
+  return response(200, { ok: true, updated: 1 });
+}
+
+async function updateNotificationPreferences(user, payload) {
+  const preferences = normalizeNotificationPreferences(payload.preferences || payload);
+  const updated = await updateDocument("users", user.uid, {
+    notificationPreferences: preferences,
+    updatedAt: Date.now(),
+  });
+  return response(200, { preferences: normalizeNotificationPreferences(updated.notificationPreferences) });
+}
+
+async function dispatchPendingActivityNotifications(source = "timer") {
+  const pending = await queryAll("in_app_notifications", { wechatStatus: "pending" }, [], 200);
+  let sent = 0;
+  let failed = 0;
+  let expired = 0;
+  for (const item of pending
+    .sort((left, right) => Number(left.createdAt) - Number(right.createdAt))
+    .slice(0, 30)) {
+    if (Number(item.createdAt) < Date.now() - DAY) {
+      await updateDocument("in_app_notifications", item.id, { wechatStatus: "expired", updatedAt: Date.now() });
+      expired += 1;
+      continue;
+    }
+    const recipient = await getDocument("users", item.recipientUid);
+    if (!recipient) continue;
+    const preferences = normalizeNotificationPreferences(recipient.notificationPreferences);
+    if (isNotificationQuietTime(preferences)) continue;
+    const delivery = await sendActivityNotification(item, recipient, preferences, source);
+    await updateDocument("in_app_notifications", item.id, {
+      wechatStatus: delivery.status,
+      wechatSentAt: delivery.sentAt || null,
+      updatedAt: Date.now(),
+    });
+    if (delivery.status === "sent") sent += 1;
+    else if (delivery.status === "failed") failed += 1;
+  }
+  return { scanned: pending.length, sent, failed, expired };
 }
 
 function reminderMiniProgramState() {
@@ -1533,6 +1975,16 @@ async function addWeight(user, payload) {
     recordedAt,
     createdAt: Date.now(),
   });
+  if (space.couple && recordedAt >= Date.now() - 12 * 60 * 60 * 1000) {
+    await bestEffortPartnerNotification(user, space, {
+      type: "weight",
+      icon: "⚖️",
+      title: "伴侣完成了称重",
+      body: `${cleanText(user.nickname, 10)} 完成了称重打卡`,
+      targetTab: "trends",
+      referenceId: entry.id,
+    });
+  }
   return response(201, { entry });
 }
 
@@ -1547,6 +1999,16 @@ async function addPoop(user, payload) {
     occurredAt,
     createdAt: Date.now(),
   });
+  if (space.couple && occurredAt >= Date.now() - 12 * 60 * 60 * 1000) {
+    await bestEffortPartnerNotification(user, space, {
+      type: "poop",
+      icon: "🚽",
+      title: "伴侣完成了记录",
+      body: `${cleanText(user.nickname, 10)} 完成了一次如厕记录`,
+      targetTab: "trends",
+      referenceId: entry.id,
+    });
+  }
   return response(201, { entry });
 }
 
@@ -1594,40 +2056,46 @@ async function removeDocuments(name, documents) {
 }
 
 async function clearMyRecords(user) {
-  const [weights, poops, sentReactions, receivedReactions, checkins, answers] = await Promise.all([
+  const [weights, poops, sentReactions, receivedReactions, checkins, answers, sentNotifications, receivedNotifications] = await Promise.all([
     queryAll("weight_entries", { ownerUid: user.uid }, [], 500),
     queryAll("poop_entries", { ownerUid: user.uid }, [], 500),
     queryAll("reactions", { fromUserUid: user.uid }, [], 500),
     queryAll("reactions", { toUserUid: user.uid }, [], 500),
     queryAll("daily_checkins", { userUid: user.uid }, [], 500),
     queryAll("daily_answers", { userUid: user.uid }, [], 500),
+    queryAll("in_app_notifications", { actorUid: user.uid }, [], 500),
+    queryAll("in_app_notifications", { recipientUid: user.uid }, [], 500),
   ]);
   const reactions = [...new Map([...sentReactions, ...receivedReactions].map((item) => [item.id, item])).values()];
+  const notifications = [...new Map([...sentNotifications, ...receivedNotifications].map((item) => [item.id, item])).values()];
   await Promise.all([
     removeDocuments("weight_entries", weights),
     removeDocuments("poop_entries", poops),
     removeDocuments("reactions", reactions),
     removeDocuments("daily_checkins", checkins),
     removeDocuments("daily_answers", answers),
+    removeDocuments("in_app_notifications", notifications),
   ]);
   return response(200, {
     ok: true,
-    deleted: weights.length + poops.length + reactions.length + checkins.length + answers.length,
+    deleted: weights.length + poops.length + reactions.length + checkins.length + answers.length + notifications.length,
   });
 }
 
 async function deleteIdentity(user) {
   await clearMyRecords(user);
   if (user.coupleId) await unbind(user);
-  const [accounts, sessions, subscriptions] = await Promise.all([
+  const [accounts, sessions, subscriptions, deliveries] = await Promise.all([
     queryAll("accounts", { uid: user.uid }, [], 20),
     queryAll("sessions", { uid: user.uid }, [], 100),
     queryAll("notification_subscriptions", { userUid: user.uid }, [], 100),
+    queryAll("notification_deliveries", { userUid: user.uid }, [], 500),
   ]);
   await Promise.all([
     removeDocuments("accounts", accounts),
     removeDocuments("sessions", sessions),
     removeDocuments("notification_subscriptions", subscriptions),
+    removeDocuments("notification_deliveries", deliveries),
     db.collection("users").doc(user.uid).remove(),
   ]);
   return response(200, { ok: true });
@@ -1646,7 +2114,55 @@ async function react(user, payload) {
     message: randomMessage(kind),
     createdAt: Date.now(),
   });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: kind === "like" ? "reaction" : "nudge",
+    icon: kind === "like" ? "💗" : "📣",
+    title: kind === "like" ? "收到一颗小红心" : "收到一次轻轻催促",
+    body: kind === "like" ? `${cleanText(user.nickname, 10)} 给你点了个赞` : reaction.message,
+    targetTab: "inbox",
+    referenceId: reaction.id,
+  });
   return response(201, { reaction });
+}
+
+async function sendNudge(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const presetKey = Object.prototype.hasOwnProperty.call(nudgePresets, payload.preset)
+    ? payload.preset
+    : "task";
+  const recent = await queryAll("reactions", {
+    coupleId: relationship.couple.id,
+    fromUserUid: user.uid,
+    toUserUid: relationship.partner.uid,
+  }, [], 80);
+  if (recent.some((item) => (
+    item.kind === "tease"
+    && item.nudgePreset === presetKey
+    && Number(item.createdAt) > Date.now() - 15 * 60 * 1000
+  ))) {
+    return jsonError("同一种提醒刚刚送过啦，15 分钟后再催一次吧。", 429, "NUDGE_RATE_LIMITED");
+  }
+  const preset = nudgePresets[presetKey];
+  const now = Date.now();
+  const reaction = await addDocument("reactions", {
+    coupleId: relationship.couple.id,
+    fromUserUid: user.uid,
+    toUserUid: relationship.partner.uid,
+    kind: "tease",
+    nudgePreset: presetKey,
+    message: preset.body,
+    createdAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "nudge",
+    icon: preset.icon,
+    title: preset.title,
+    body: preset.body,
+    targetTab: presetKey === "task" ? "notebook" : "farm",
+    referenceId: reaction.id,
+  });
+  return response(201, { reaction, preset: presetKey });
 }
 
 async function removeOwnedDocument(user, collectionName, id) {
@@ -1816,6 +2332,14 @@ async function spinTogetherDecision(user, payload) {
     createdAt: now,
     updatedAt: now,
   });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "decision_created",
+    icon: "🎲",
+    title: "等你一起确认",
+    body: `${cleanText(user.nickname, 10)} 抽中了${cleanText(selected.label, 16)}`,
+    targetTab: "together",
+    referenceId: decision.id,
+  });
   return response(201, { decision: publicDecision(decision) });
 }
 
@@ -1837,12 +2361,30 @@ async function respondTogetherDecision(user, payload) {
       vetoedBy: user.uid,
       updatedAt: now,
     });
+    await bestEffortPartnerNotification(user, relationship, {
+      type: "decision_resolved",
+      icon: "🙈",
+      title: "这次重新抽一家",
+      body: `${cleanText(user.nickname, 10)} 想换一个选择`,
+      targetTab: "together",
+      referenceId: `${decision.id}:veto:${user.uid}`,
+    });
     return response(200, { decision: publicDecision(updated) });
   }
   const confirmedByUids = [...new Set([...(decision.confirmedByUids || []), user.uid])]
     .filter((uid) => relationship.couple.memberUids.includes(uid));
   const status = relationship.couple.memberUids.every((uid) => confirmedByUids.includes(uid)) ? "confirmed" : "pending";
   const updated = await updateDocument("together_decisions", id, { confirmedByUids, status, updatedAt: now });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "decision_resolved",
+    icon: status === "confirmed" ? "🍽️" : "🤝",
+    title: status === "confirmed" ? "共同决定确认啦" : "伴侣也点了确认",
+    body: status === "confirmed"
+      ? `${cleanText(decision.optionLabel, 16)}，就这么定啦`
+      : `${cleanText(user.nickname, 10)} 等你一起确认`,
+    targetTab: "together",
+    referenceId: `${decision.id}:confirm:${user.uid}`,
+  });
   return response(200, { decision: publicDecision(updated) });
 }
 
@@ -1869,6 +2411,16 @@ async function saveDailyCheckin(user, payload) {
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   });
+  if (!existing) {
+    await bestEffortPartnerNotification(user, relationship, {
+      type: "mood_checkin",
+      icon: "🌤️",
+      title: "伴侣完成了今日心情",
+      body: `${cleanText(user.nickname, 10)} 来田地报到啦`,
+      targetTab: "together",
+      referenceId: id,
+    });
+  }
   return response(200, { ok: true });
 }
 
@@ -1889,6 +2441,14 @@ async function answerDailyQuestion(user, payload) {
     choice,
     createdAt: now,
     updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "daily_answer",
+    icon: "💭",
+    title: "今日默契题有新答案",
+    body: `${cleanText(user.nickname, 10)} 已经答题，等你揭晓`,
+    targetTab: "together",
+    referenceId: id,
   });
   return response(200, { ok: true });
 }
@@ -2775,6 +3335,20 @@ async function toggleVillageLike(user, payload) {
   const likes = await queryAll("community_reactions", { postId }, [], 2000);
   const likeCount = likes.filter((item) => item.active !== false).length;
   await updateDocument("community_posts", postId, { likeCount, updatedAt: Date.now() });
+  if (active) {
+    const authorCouple = await getDocument("couples", post.authorCoupleId);
+    if (authorCouple?.status === "active") {
+      await bestEffortNotificationsForCouple(user, authorCouple, {
+        type: "village_like",
+        icon: "🌸",
+        title: "村庄动态收到小花",
+        body: `${cleanText(context.couple.farmName, 12)} 给你们送了小花`,
+        location: cleanText(context.village.name, 20),
+        targetTab: "village",
+        referenceId: `${postId}:${context.couple.id}`,
+      });
+    }
+  }
   return response(200, { active, likeCount });
 }
 
@@ -2807,6 +3381,18 @@ async function addVillageComment(user, payload, requestContext) {
   const comments = await queryAll("community_comments", { postId }, [], 2000);
   const commentCount = comments.filter((item) => item.status === "published").length;
   await updateDocument("community_posts", postId, { commentCount, updatedAt: now });
+  const authorCouple = await getDocument("couples", post.authorCoupleId);
+  if (authorCouple?.status === "active") {
+    await bestEffortNotificationsForCouple(user, authorCouple, {
+      type: "village_comment",
+      icon: "💬",
+      title: "村庄动态有新留言",
+      body: `${cleanText(user.nickname, 10)}：${cleanText(content, 18)}`,
+      location: cleanText(context.village.name, 20),
+      targetTab: "village",
+      referenceId: comment.id,
+    });
+  }
   return response(201, { comment, commentCount });
 }
 
@@ -2887,11 +3473,15 @@ async function handleAction(user, action, payload, requestContext) {
     case "toggle-shared-memo": return toggleSharedMemo(user, payload);
     case "delete-shared-memo": return deleteSharedMemo(user, payload);
     case "save-subscription-consent": return saveSubscriptionConsent(user, payload, requestContext);
+    case "notification-center": return notificationCenter(user);
+    case "mark-notification-read": return markNotificationRead(user, payload);
+    case "update-notification-preferences": return updateNotificationPreferences(user, payload);
     case "add-weight": return addWeight(user, payload);
     case "add-poop": return addPoop(user, payload);
     case "update-weight": return updateWeight(user, payload);
     case "update-poop": return updatePoop(user, payload);
     case "react": return react(user, payload);
+    case "send-nudge": return sendNudge(user, payload);
     case "delete-weight": return removeOwnedDocument(user, "weight_entries", payload.id);
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
@@ -2937,8 +3527,9 @@ exports.main = async function main(event = {}, context = {}) {
   if (timerTriggered) {
     try {
       await ensureCollections();
-      const result = await maybeDispatchDueReminders("timer", true);
-      return response(200, result);
+      const reminderResult = await maybeDispatchDueReminders("timer", true);
+      const activity = await dispatchPendingActivityNotifications("timer");
+      return response(200, { ...reminderResult, activity });
     } catch (error) {
       console.error("scheduled reminder sweep failed", errorDetails(error));
       return response(500, { ok: false, code: "REMINDER_SWEEP_FAILED" });
@@ -2948,7 +3539,7 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.6.0",
+      version: "0.7.0",
       serverTime: Date.now(),
     });
   }
@@ -2964,7 +3555,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.6.0",
+        version: "0.7.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -2989,7 +3580,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "village",
-        version: "0.6.0",
+        version: "0.7.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -2998,6 +3589,32 @@ exports.main = async function main(event = {}, context = {}) {
       return response(500, {
         error: "熟人村庄云端尚未准备好。",
         code: "VILLAGE_HEALTH_FAILED",
+        diagnosticId,
+      });
+    }
+  }
+
+  if (action === "notification-health") {
+    try {
+      await ensureCollections();
+      await Promise.all([
+        queryAll("in_app_notifications", {}, [["createdAt", "desc"]], 1),
+        queryAll("notification_subscriptions", {}, [], 1),
+        queryAll("notification_deliveries", {}, [], 1),
+      ]);
+      return response(200, {
+        ok: true,
+        service: "notifications",
+        version: "0.7.0",
+        templateConfigured: Boolean(WECHAT_MEMO_TEMPLATE_ID),
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+      console.error("notification health check failed", { diagnosticId, ...errorDetails(error) });
+      return response(500, {
+        error: "情侣消息云端尚未准备好。",
+        code: "NOTIFICATION_HEALTH_FAILED",
         diagnosticId,
       });
     }

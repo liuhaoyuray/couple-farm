@@ -4,6 +4,7 @@ import Taro, { useDidShow, usePullDownRefresh } from "@tarojs/taro";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cloudCall } from "../../cloud";
 import { imageUploadErrorMessage, prepareImageForUpload } from "../../media";
+import NotificationsPanel from "./notifications";
 import NotebookPanel from "./notebook";
 import TogetherPanel from "./together";
 import VillagePanel from "./village";
@@ -87,6 +88,14 @@ type FarmData = {
   reactions?: Reaction[];
   anniversaries?: Anniversary[];
   sharedMemos?: SharedMemoSummary[];
+  notificationSummary?: { unreadCount: number; availableQuota: number };
+  weeklyPulse?: {
+    jointDays: number;
+    cheers: number;
+    completedTasks: number;
+    score: number;
+    suggestion: string;
+  };
   serverTime: number;
 };
 
@@ -101,7 +110,7 @@ type SharedMemoSummary = {
   status: "open" | "completed" | "archived";
 };
 
-type TabKey = "farm" | "notebook" | "trends" | "together" | "village" | "anniversaries" | "pair" | "us";
+type TabKey = "farm" | "inbox" | "notebook" | "trends" | "together" | "village" | "anniversaries" | "pair" | "us";
 type RecordItem = {
   id: string;
   type: "weight" | "poop";
@@ -243,7 +252,7 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">我们俩的小田地 · 0.6.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
         <Text className="title">{error ? "小田地打了个盹" : "正在打开我们俩的小田地"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
@@ -258,6 +267,7 @@ export default function IndexPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("farm");
+  const [unreadCount, setUnreadCount] = useState(0);
   const [createdInvite, setCreatedInvite] = useState<string | null>(null);
   const [inviteCode, setInviteCode] = useState("");
 
@@ -304,9 +314,15 @@ export default function IndexPage() {
     }
     const next = result.data as unknown as FarmData;
     setData(next);
+    setUnreadCount(next.notificationSummary?.unreadCount || 0);
     hydrateForms(next);
     setLoading(false);
   }, [hydrateForms]);
+
+  const updateNotificationSummary = useCallback((summary: { unreadCount: number; availableQuota: number }) => {
+    setUnreadCount(summary.unreadCount);
+    setData((current) => current ? { ...current, notificationSummary: summary } : current);
+  }, []);
 
   useDidShow(() => {
     void bootstrap(Boolean(data));
@@ -421,6 +437,25 @@ export default function IndexPage() {
       occurredAt: timestampFrom(recordDate, recordTime),
     }, editingPoopId ? "时间修改啦" : "如厕记下啦");
     if (ok) resetRecordForm();
+  };
+
+  const chooseNudge = async () => {
+    const choices = [
+      { key: "weight", label: "⚖️ 记得称重" },
+      { key: "poop", label: "🚽 记得记录" },
+      { key: "task", label: "✅ 看看共同待办" },
+      { key: "water", label: "🥤 记得喝水" },
+      { key: "rest", label: "🌙 早点休息" },
+      { key: "hug", label: "🤗 送一个抱抱" },
+    ];
+    try {
+      const selected = await Taro.showActionSheet({ itemList: choices.map((item) => item.label) });
+      const preset = choices[selected.tapIndex];
+      if (preset) await runAction("send-nudge", { preset: preset.key }, "小提醒已经送到");
+    } catch (actionSheetError) {
+      const message = String((actionSheetError as { errMsg?: string })?.errMsg || actionSheetError);
+      if (!/cancel/i.test(message)) console.error("Unable to select nudge", actionSheetError);
+    }
   };
 
   const saveFarmSettings = async () => {
@@ -754,7 +789,7 @@ export default function IndexPage() {
 
             {soloTab === "farm" && <>
               <View className="farm-hero solo-hero">
-                <View><Text className="kicker">我们俩的小田地 · 0.6.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
+                <View><Text className="kicker">我们俩的小田地 · 0.7.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
                 <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🌷</Text></View>
               </View>
 
@@ -816,16 +851,21 @@ export default function IndexPage() {
 
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">我们俩的小田地 · 0.6.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <View><Text className="kicker">我们俩的小田地 · 0.7.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <Button className="message-bell" onClick={() => setActiveTab("inbox")}><Text>💌</Text>{unreadCount > 0 && <Text className="message-badge">{unreadCount > 99 ? "99+" : unreadCount}</Text>}</Button>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>
 
             {!data.couple.togetherSince && <View className="setup-banner" onClick={() => setActiveTab("us")}><Text>💞 设置你们在一起的日期，开始计算纪念天数</Text><Text>去设置 ›</Text></View>}
 
+            {!data.notificationSummary?.availableQuota && <View className="setup-banner notification-onboarding" onClick={() => setActiveTab("inbox")}><Text>🔔 存 1 次微信提醒，伴侣下次打卡或点赞时及时告诉你</Text><Text>去开启 ›</Text></View>}
+
             {reminderCards.length > 0 && <View className="reminder-stack">{reminderCards.map((card) => <View className="reminder-card" key={card.key} onClick={() => setActiveTab(card.tab)}><Text className="reminder-icon">{card.icon}</Text><View><Text className="activity-title">{card.title}</Text><Text className="role">{card.detail}</Text></View><Text className="chevron">›</Text></View>)}</View>}
 
             <View className="panel today-board" onClick={() => setActiveTab("notebook")}><View className="section-heading"><View><Text className="kicker">今天的小本本</Text><Text className="subtitle">两个人都不用靠脑子硬记</Text></View><Text className="board-count">{sharedMemos.length}</Text></View>{sharedMemos.slice(0, 3).map((memo) => <View className="board-row" key={memo.id}><Text>{memo.kind === "event" ? "📅" : memo.kind === "task" ? "✅" : "📝"}</Text><View><Text className="activity-title">{memo.title}</Text><Text className="role">{memo.dueAt ? formatDateTime(memo.dueAt) : "随时都可以完成"}</Text></View><Text className="chevron">›</Text></View>)}{!sharedMemos.length && <Text className="empty compact-empty">还没有共同事项，点这里记下一件。</Text>}</View>
+
+            {data.weeklyPulse && <View className="panel weekly-pulse-card"><View className="section-heading"><View><Text className="kicker">本周默契报告</Text><Text className="subtitle">两个人一起经营的痕迹</Text></View><View className="pulse-score"><Text>{data.weeklyPulse.score}</Text><Text>默契值</Text></View></View><View className="pulse-stats"><View><Text>{data.weeklyPulse.jointDays}</Text><Text>共同打卡天</Text></View><View><Text>{data.weeklyPulse.cheers}</Text><Text>互相回应</Text></View><View><Text>{data.weeklyPulse.completedTasks}</Text><Text>完成事项</Text></View></View><Text className="pulse-suggestion">🌱 {data.weeklyPulse.suggestion}</Text></View>}
 
             <View className="milestone-grid">
               <View className="milestone-card"><Text className="milestone-icon">💗</Text><Text className="metric-value">{nextMilestone ? `${nextMilestone.remaining}天` : "待设置"}</Text><Text className="role">{nextMilestone ? `距离第 ${nextMilestone.day} 天` : "设置相恋日期"}</Text></View>
@@ -840,7 +880,7 @@ export default function IndexPage() {
 
             <View className="panel action-panel"><Text className="kicker">快速记录</Text><Text className="subtitle">{editingWeightId || editingPoopId ? "正在修改一条记录" : "我的今天"}</Text><View className="date-row"><Picker mode="date" value={recordDate} onChange={(event) => setRecordDate(String(event.detail.value))}><View className="picker-field">📅 {recordDate}</View></Picker><Picker mode="time" value={recordTime} onChange={(event) => setRecordTime(String(event.detail.value))}><View className="picker-field">🕐 {recordTime}</View></Picker></View><View className="weight-row"><Input className="field" type="digit" value={weight} onInput={(event) => setWeight(event.detail.value)} placeholder="体重 kg，例如 68.4" /><Button className="primary compact" loading={busy} onClick={saveWeight}>{editingWeightId ? "保存" : "记体重"}</Button></View><Button className="secondary full" loading={busy} onClick={savePoop}>{editingPoopId ? "保存如厕时间" : "🚽 记一次如厕"}</Button>{(editingWeightId || editingPoopId) && <Button className="text-button" onClick={resetRecordForm}>取消修改</Button>}</View>
 
-            <View className="panel"><Text className="kicker">给点动静</Text><Text className="subtitle">回应 {partner.nickname}</Text><View className="reaction-row"><Button disabled={busy} onClick={() => runAction("react", { kind: "like" }, "小红心送到啦")}>💗<Text>给个赞</Text></Button><Button disabled={busy} onClick={() => runAction("react", { kind: "tease" }, "小喇叭送到啦")}>📣<Text>轻轻催促</Text></Button></View>{reactions[0] && <View className="note"><Text>“{reactions[0].message}”</Text><Text className="role">{formatDateTime(reactions[0].createdAt)}</Text></View>}</View>
+            <View className="panel"><Text className="kicker">给点动静</Text><Text className="subtitle">回应 {partner.nickname}</Text><Text className="description small">对方开启微信动态提醒后，点赞和催促可以直接送到微信。</Text><View className="reaction-row"><Button disabled={busy} onClick={() => runAction("react", { kind: "like" }, "小红心送到啦")}>💗<Text>给个赞</Text></Button><Button disabled={busy} onClick={chooseNudge}>📣<Text>选个催促</Text></Button></View>{reactions[0] && <View className="note"><Text>“{reactions[0].message}”</Text><Text className="role">{formatDateTime(reactions[0].createdAt)}</Text></View>}</View>
 
             <View className="panel"><Text className="kicker">共同动态</Text><Text className="subtitle">最近发生的小事</Text>{timeline.length ? <View className="timeline">{timeline.map((item) => { const owner = people.find((person) => person.uid === item.ownerUid) || viewer; return <View className="activity" key={`${item.type}-${item.id}`}><ProfileAvatar profile={owner} size="tiny" /><View><Text className="activity-title">{owner.nickname} · {item.type === "weight" ? `记录体重 ${item.weightKg?.toFixed(1)} kg` : "记录了一次如厕"}</Text><Text className="role">{formatDateTime(item.occurredAt)}</Text></View></View>; })}</View> : <View className="empty">🪴 还没有记录，种下第一件小事吧。</View>}</View>
           </>}
@@ -862,6 +902,8 @@ export default function IndexPage() {
 
           {activeTab === "village" && <VillagePanel viewer={viewer} couple={data.couple} />}
 
+          {activeTab === "inbox" && <NotificationsPanel onSummaryChange={updateNotificationSummary} onNavigate={(tab) => setActiveTab(tab as TabKey)} />}
+
           {activeTab === "anniversaries" && <>
             <View className="page-heading"><Text className="kicker">我们的故事</Text><Text className="title">把重要的日子种进田地</Text><Text className="description">可以写入手机系统日历，即使不打开小程序也能收到提醒。</Text></View>
 
@@ -880,6 +922,8 @@ export default function IndexPage() {
             <View className="panel"><Text className="kicker">共同田地</Text><Text className="subtitle">田地名称和相恋日期</Text><Input className="field" value={farmName} onInput={(event) => setFarmName(event.detail.value)} maxlength={16} placeholder="给田地取个名字" /><Picker mode="date" value={togetherSince || dateValue()} end={dateValue()} onChange={(event) => setTogetherSince(String(event.detail.value))}><View className="picker-field settings-picker">💞 {togetherSince || "选择在一起的日期"}</View></Picker><Button className="primary" loading={busy} onClick={saveFarmSettings}>保存共同田地</Button></View>
 
             <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">别让秤和小马桶等困了</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">打开小程序时检查今日记录</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">到点且今天未记录时提示</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">💞 纪念日提醒</Text><Text className="role">提前 7 天、1 天和当天提示</Text></View><Switch checked={reminders.anniversary.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, anniversary: { ...current.anniversary, enabled: event.detail.value } }))} /></View><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存小程序内提醒</Button><Text className="fine-print">手机日历提醒由系统日历管理；重复点击可能生成重复日程。</Text></View>
+
+            <View className="panel notification-settings-shortcut" onClick={() => setActiveTab("inbox")}><Text className="notification-shortcut-icon">💌</Text><View><Text className="kicker">情侣消息与微信提醒</Text><Text className="subtitle compact-title">{unreadCount ? `${unreadCount} 条未读消息` : "管理通知类型、免打扰和提醒次数"}</Text></View><Text className="chevron">›</Text></View>
 
             <View className="panel privacy-panel"><Text className="kicker">隐私与数据</Text><Text className="subtitle">你的记录由你管理</Text><Text className="description small">体重、如厕、配对和互动数据只用于我们俩的小田地功能，并只向当前绑定伴侣展示。</Text><Button className="outline-danger" onClick={clearMyRecords}>清空我的记录</Button><Button className="outline-danger" onClick={unbind}>解除伴侣绑定</Button><Button className="danger-solid" onClick={deleteIdentity}>注销我的田地身份</Button></View>
           </>}
