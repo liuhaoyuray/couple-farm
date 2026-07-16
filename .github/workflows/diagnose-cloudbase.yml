@@ -1,0 +1,68 @@
+name: 诊断 CloudBase 线上错误
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-cloudbase.yml"
+      - "scripts/filter-cloudbase-diagnostic.cjs"
+  workflow_dispatch:
+    inputs:
+      diagnostic_id:
+        description: 页面显示的诊断码
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 校验诊断码
+        env:
+          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id || '611ca25d' }}
+        run: test "$(printf '%s' "$DIAGNOSTIC_ID" | sed -E 's/^[A-Za-z0-9_-]{6,64}$//')" = ""
+
+      - name: 安装 CloudBase CLI
+        run: npm install --global "@cloudbase/cli@3.6.2"
+
+      - name: 登录腾讯云
+        env:
+          CLOUDBASE_API_KEY: ${{ secrets.CLOUDBASE_API_KEY }}
+          TCB_ENV_ID: couple-farm-d8gtiahu251a27c23
+        run: |
+          test -n "$CLOUDBASE_API_KEY" || { echo "缺少 CLOUDBASE_API_KEY"; exit 1; }
+          tcb login --cloudbase-api-key "$CLOUDBASE_API_KEY" --env-id "$TCB_ENV_ID" --yes
+
+      - name: 精确检索并脱敏输出
+        env:
+          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id || '611ca25d' }}
+          TCB_ENV_ID: couple-farm-d8gtiahu251a27c23
+          DIAGNOSTIC_ENCRYPTION_KEY: ${{ secrets.DIAGNOSTIC_ENCRYPTION_KEY }}
+        run: |
+          test -n "$DIAGNOSTIC_ENCRYPTION_KEY" || { echo "缺少诊断加密密钥"; exit 1; }
+          query="function_name:\"couple-tracker\" AND \"$DIAGNOSTIC_ID\""
+          tcb logs search --env-id "$TCB_ENV_ID" --query "$query" --timeRange 7d --limit 20 --sort asc --json \
+            > "$RUNNER_TEMP/cloudbase-raw.json"
+          node scripts/filter-cloudbase-diagnostic.cjs "$DIAGNOSTIC_ID" \
+            < "$RUNNER_TEMP/cloudbase-raw.json" \
+            > "$RUNNER_TEMP/cloudbase-diagnostic.json"
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -in "$RUNNER_TEMP/cloudbase-diagnostic.json" \
+            -out "$RUNNER_TEMP/cloudbase-diagnostic.enc" \
+            -pass env:DIAGNOSTIC_ENCRYPTION_KEY
+          shred -u "$RUNNER_TEMP/cloudbase-raw.json" "$RUNNER_TEMP/cloudbase-diagnostic.json"
+
+      - name: 保存加密诊断结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudbase-diagnostic-${{ inputs.diagnostic_id || '611ca25d' }}
+          path: ${{ runner.temp }}/cloudbase-diagnostic.enc
+          retention-days: 1
+          if-no-files-found: error
