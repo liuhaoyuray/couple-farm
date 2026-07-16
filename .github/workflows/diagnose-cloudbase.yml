@@ -47,8 +47,7 @@ jobs:
           DIAGNOSTIC_ENCRYPTION_KEY: ${{ secrets.DIAGNOSTIC_ENCRYPTION_KEY }}
         run: |
           test -n "$DIAGNOSTIC_ENCRYPTION_KEY" || { echo "缺少诊断加密密钥"; exit 1; }
-          query="function_name:\"couple-tracker\" AND \"$DIAGNOSTIC_ID\""
-          tcb logs search --env-id "$TCB_ENV_ID" --query "$query" --timeRange 7d --limit 20 --sort asc --json \
+          tcb fn log couple-tracker --env-id "$TCB_ENV_ID" --limit 1000 --order desc --json \
             > "$RUNNER_TEMP/cloudbase-raw.json"
           node scripts/filter-cloudbase-diagnostic.cjs "$DIAGNOSTIC_ID" \
             < "$RUNNER_TEMP/cloudbase-raw.json" \
