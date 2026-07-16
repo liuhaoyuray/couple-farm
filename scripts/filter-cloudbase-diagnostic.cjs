@@ -37,7 +37,8 @@ function sanitize(value, key = "") {
 
 function collect(value, path = "root", matches = []) {
   if (typeof value === "string") {
-    if (value.includes(diagnosticId)) matches.push({ path, value });
+    const ignoredMetadata = /\.(queryString|diagnostic_id|diagnosticId)$/i.test(path);
+    if (!ignoredMetadata && value.includes(diagnosticId)) matches.push({ path, value });
     return matches;
   }
   if (Array.isArray(value)) {
@@ -45,9 +46,7 @@ function collect(value, path = "root", matches = []) {
     return matches;
   }
   if (value && typeof value === "object") {
-    const serialized = JSON.stringify(value);
-    if (serialized.includes(diagnosticId)) matches.push({ path, value });
-    else Object.entries(value).forEach(([key, child]) => collect(child, `${path}.${key}`, matches));
+    Object.entries(value).forEach(([key, child]) => collect(child, `${path}.${key}`, matches));
   }
   return matches;
 }
