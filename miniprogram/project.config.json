@@ -1,7 +1,7 @@
 {
   "miniprogramRoot": "dist/",
   "projectname": "couple-farm",
-  "description": "情侣小农场 - 微信小程序 0.3.0 社区版",
+  "description": "情侣小农场 - 微信小程序 0.4.0 今天一起版",
   "appid": "wxa777aca89186974c",
   "setting": {
     "urlCheck": false,

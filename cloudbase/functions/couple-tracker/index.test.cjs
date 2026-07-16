@@ -157,7 +157,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.3.1");
+  assert.equal(result.data.version, "0.4.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -165,7 +165,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.3.1");
+  assert.equal(result.data.version, "0.4.0");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -350,6 +350,78 @@ test("supports editable profiles, farm settings, reminders and anniversaries", a
 
   const removed = await invoke("browser-a", "delete-anniversary", { id: created.data.anniversary.id }, firstToken);
   assert.equal(removed.status, 200);
+});
+
+test("supports daily couple rituals, restaurant decisions and membership trials", async () => {
+  const date = "2026-07-16";
+  const initial = await invoke("browser-a", "together-hub", { date }, firstToken);
+  assert.equal(initial.status, 200);
+  assert.equal(initial.data.membership.current.plan, "free");
+  assert.equal(initial.data.membership.current.limits.activeRestaurantOptions, 8);
+
+  for (let index = 0; index < 8; index += 1) {
+    const option = await invoke("browser-a", "add-together-option", {
+      label: `好吃餐厅${index + 1}`,
+      cuisine: index % 2 ? "火锅" : "家常菜",
+      budget: index % 3 === 0 ? "¥" : "¥¥",
+    }, firstToken);
+    assert.equal(option.status, 201);
+  }
+  const overFreeLimit = await invoke("browser-b", "add-together-option", {
+    label: "第九家餐厅",
+    budget: "¥¥¥",
+  }, secondToken);
+  assert.equal(overFreeLimit.status, 409);
+  assert.equal(overFreeLimit.data.code, "OPTION_LIMIT_REACHED");
+
+  const premiumBeforeTrial = await invoke("browser-a", "spin-together-decision", { mode: "fresh" }, firstToken);
+  assert.equal(premiumBeforeTrial.status, 403);
+  assert.equal(premiumBeforeTrial.data.code, "MEMBERSHIP_REQUIRED");
+
+  const spun = await invoke("browser-a", "spin-together-decision", { mode: "classic" }, firstToken);
+  assert.equal(spun.status, 201);
+  assert.equal(spun.data.decision.status, "pending");
+  const confirmed = await invoke("browser-b", "respond-together-decision", {
+    id: spun.data.decision.id,
+    response: "confirm",
+  }, secondToken);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.data.decision.status, "confirmed");
+
+  const trial = await invoke("browser-b", "claim-founder-trial", {}, secondToken);
+  assert.equal(trial.status, 200);
+  assert.equal(trial.data.membership.current.plan, "plus");
+  assert.equal(trial.data.membership.current.source, "founder_trial");
+  const ninth = await invoke("browser-b", "add-together-option", {
+    label: "第九家餐厅",
+    cuisine: "烧烤",
+    budget: "¥¥¥",
+  }, secondToken);
+  assert.equal(ninth.status, 201);
+  const fresh = await invoke("browser-b", "spin-together-decision", { mode: "fresh" }, secondToken);
+  assert.equal(fresh.status, 201);
+  const vetoed = await invoke("browser-a", "respond-together-decision", {
+    id: fresh.data.decision.id,
+    response: "veto",
+  }, firstToken);
+  assert.equal(vetoed.data.decision.status, "vetoed");
+
+  await invoke("browser-a", "save-daily-checkin", { date, mood: 5, energy: 4, note: "今晚想一起散步" }, firstToken);
+  await invoke("browser-b", "save-daily-checkin", { date, mood: 3, energy: 2, note: "今天有点累" }, secondToken);
+  await invoke("browser-b", "answer-daily-question", { date, choice: "a" }, secondToken);
+  const hiddenAnswer = await invoke("browser-a", "together-hub", { date }, firstToken);
+  assert.equal(hiddenAnswer.data.prompt.viewerChoice, null);
+  assert.equal(hiddenAnswer.data.prompt.partnerAnswered, true);
+  assert.equal(hiddenAnswer.data.prompt.partnerChoice, null);
+  await invoke("browser-a", "answer-daily-question", { date, choice: "a" }, firstToken);
+  const revealed = await invoke("browser-a", "together-hub", { date }, firstToken);
+  assert.equal(revealed.data.checkins.length, 2);
+  assert.equal(revealed.data.prompt.partnerChoice, "a");
+  assert.equal(revealed.data.prompt.matched, true);
+
+  const waitlist = await invoke("browser-a", "join-membership-waitlist", { plan: "yearly" }, firstToken);
+  assert.equal(waitlist.status, 200);
+  assert.equal(waitlist.data.membership.current.waitlisted, true);
 });
 
 test("supports a moderated community feed with images, follows, likes, comments and blocking", async () => {

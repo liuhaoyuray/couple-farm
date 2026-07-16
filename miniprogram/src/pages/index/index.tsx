@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { cloudCall } from "../../cloud";
 import { imageUploadErrorMessage, prepareImageForUpload } from "../../media";
 import CommunityPanel from "./community";
+import TogetherPanel from "./together";
 import "./index.scss";
 
 type ReminderRule = {
@@ -86,7 +87,7 @@ type FarmData = {
   serverTime: number;
 };
 
-type TabKey = "farm" | "trends" | "village" | "anniversaries" | "us";
+type TabKey = "farm" | "trends" | "together" | "village" | "anniversaries" | "us";
 type RecordItem = {
   id: string;
   type: "weight" | "poop";
@@ -228,7 +229,7 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">情侣小农场 · 0.3.0</Text>
+        <Text className="kicker">情侣小农场 · 0.4.0</Text>
         <Text className="title">{error ? "小农场打了个盹" : "正在打开情侣小农场"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
@@ -746,7 +747,7 @@ export default function IndexPage() {
 
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">情侣小农场 · 0.3.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <View><Text className="kicker">情侣小农场 · 0.4.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>
@@ -782,6 +783,8 @@ export default function IndexPage() {
             <View className="panel"><Text className="kicker">记录管理</Text><Text className="subtitle">最近的记录</Text>{recordItems.length ? <View className="record-list">{recordItems.slice(0, 24).map((record) => { const owner = people.find((person) => person.uid === record.ownerUid) || viewer; const mine = record.ownerUid === viewer.uid; return <View className="record-row" key={`${record.type}-${record.id}`}><Text className="record-icon">{record.type === "weight" ? "⚖️" : "🚽"}</Text><View className="record-copy"><Text className="activity-title">{owner.nickname} · {record.type === "weight" ? `${record.weightKg?.toFixed(1)} kg` : "一次如厕"}</Text><Text className="role">{formatDateTime(record.occurredAt)}</Text></View>{mine && <View className="record-actions"><Button onClick={() => beginEditRecord(record)}>编辑</Button><Button className="danger-mini" onClick={() => confirmDeleteRecord(record)}>删除</Button></View>}</View>; })}</View> : <View className="empty">还没有记录。</View>}</View>
           </>}
 
+          {activeTab === "together" && <TogetherPanel viewer={viewer} partner={partner} onOpenAnniversaries={() => setActiveTab("anniversaries")} />}
+
           {activeTab === "village" && <CommunityPanel viewer={viewer} couple={data.couple} />}
 
           {activeTab === "anniversaries" && <>
@@ -812,8 +815,8 @@ export default function IndexPage() {
         {([
           ["farm", "🏡", "农场"],
           ["trends", "📈", "趋势"],
+          ["together", "🎲", "一起"],
           ["village", "🌾", "村口"],
-          ["anniversaries", "💞", "纪念日"],
           ["us", "⚙️", "我们"],
         ] as const).map(([key, icon, label]) => <Button key={key} className={activeTab === key ? "tab-item active" : "tab-item"} onClick={() => setActiveTab(key)}><Text>{icon}</Text><Text>{label}</Text></Button>)}
       </View>

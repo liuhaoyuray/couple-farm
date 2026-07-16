@@ -29,6 +29,11 @@ const COLLECTIONS = [
   "community_follows",
   "community_reports",
   "community_blocks",
+  "together_options",
+  "together_decisions",
+  "daily_checkins",
+  "daily_answers",
+  "membership_waitlist",
 ];
 
 const avatarChoices = [
@@ -52,6 +57,24 @@ const communityPrompts = [
   "如果给你们的关系取一首歌名，会是什么？",
   "今天想认真夸对方哪一点？",
 ];
+const togetherPrompts = [
+  { text: "周末更想怎么过？", a: "出门逛逛", b: "宅家充电" },
+  { text: "约会时更看重什么？", a: "好吃最重要", b: "氛围最重要" },
+  { text: "突然多出一天假期？", a: "短途出发", b: "睡到自然醒" },
+  { text: "收到惊喜更喜欢哪种？", a: "有用的小礼物", b: "用心的小安排" },
+  { text: "今晚的快乐来源？", a: "一起吃好吃的", b: "一起看点什么" },
+  { text: "发生小分歧时更希望？", a: "当场说清楚", b: "冷静后再聊" },
+  { text: "旅行时你是哪一派？", a: "计划得明明白白", b: "走到哪玩到哪" },
+  { text: "想一起养成哪个习惯？", a: "早点睡觉", b: "经常运动" },
+  { text: "更心动的纪念方式？", a: "拍照留念", b: "写一段话" },
+  { text: "今天更需要对方给你？", a: "一个抱抱", b: "一点独处空间" },
+  { text: "一起做饭时你想负责？", a: "掌勺发挥", b: "洗切收尾" },
+  { text: "下次约会想试试？", a: "没去过的新店", b: "熟悉的宝藏店" },
+];
+const moodLabels = ["有点低落", "需要抱抱", "普普通通", "心情不错", "开心冒泡"];
+const decisionModes = ["classic", "fresh", "budget"];
+const optionBudgets = ["¥", "¥¥", "¥¥¥"];
+const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
   "稳稳记录的人最厉害啦。",
@@ -167,6 +190,78 @@ function normalizeCommunitySettings(couple) {
     enabled: Boolean(couple && couple.communityEnabled),
     bio: cleanCommunityText(couple && couple.communityBio, 80),
     publicStats: normalizePublicStats(couple && couple.communityPublicStats),
+  };
+}
+
+function membershipState(couple, now = Date.now()) {
+  const paidUntil = Number(couple && couple.membershipUntil) || 0;
+  const trialUntil = Number(couple && couple.founderTrialUntil) || 0;
+  const activeUntil = Math.max(paidUntil, trialUntil);
+  const active = activeUntil > now;
+  return {
+    plan: active ? "plus" : "free",
+    source: paidUntil > now ? "paid" : trialUntil > now ? "founder_trial" : "free",
+    activeUntil: active ? activeUntil : null,
+    trialAvailable: !couple?.founderTrialClaimedAt,
+    waitlisted: Boolean(couple?.membershipWaitlistedAt),
+    limits: {
+      activeRestaurantOptions: active ? 50 : 8,
+      decisionHistoryDays: active ? 180 : 14,
+    },
+  };
+}
+
+function membershipCatalog(couple) {
+  return {
+    current: membershipState(couple),
+    productName: "心动会员",
+    suggestedPrices: {
+      monthly: 600,
+      yearly: 4800,
+      currency: "CNY",
+    },
+    features: [
+      "餐厅候选池扩展到 50 个",
+      "避开近期与按预算抽签",
+      "180 天共同决定历史",
+      "关系月报与会员主题（后续开放）",
+    ],
+    paymentReady: false,
+    paymentNote: "微信支付商户接入完成后开放；当前可领取内测体验或登记首发优惠。",
+  };
+}
+
+function normalizeBudget(value) {
+  const budget = cleanText(value, 4);
+  return optionBudgets.includes(budget) ? budget : "¥¥";
+}
+
+function publicTogetherOption(option) {
+  return {
+    id: option.id,
+    label: cleanText(option.label, 20),
+    cuisine: cleanText(option.cuisine, 10),
+    budget: normalizeBudget(option.budget),
+    note: cleanText(option.note, 30),
+    createdBy: option.createdBy,
+    createdAt: option.createdAt,
+  };
+}
+
+function publicDecision(decision) {
+  return {
+    id: decision.id,
+    optionId: decision.optionId,
+    optionLabel: cleanText(decision.optionLabel, 20),
+    cuisine: cleanText(decision.cuisine, 10),
+    budget: normalizeBudget(decision.budget),
+    mode: decisionModes.includes(decision.mode) ? decision.mode : "classic",
+    status: ["pending", "confirmed", "vetoed"].includes(decision.status) ? decision.status : "pending",
+    createdBy: decision.createdBy,
+    confirmedByUids: Array.isArray(decision.confirmedByUids) ? decision.confirmedByUids.slice(0, 2) : [],
+    vetoedBy: decision.vetoedBy || null,
+    createdAt: decision.createdAt,
+    updatedAt: decision.updatedAt || decision.createdAt,
   };
 }
 
@@ -467,6 +562,7 @@ function publicCouple(couple) {
     updatedAt: couple.updatedAt || couple.createdAt,
     updatedBy: couple.updatedBy || null,
     community: normalizeCommunitySettings(couple),
+    membership: membershipState(couple),
   };
 }
 
@@ -884,6 +980,11 @@ async function acceptInvite(user, payload) {
     communityBio: "",
     communityPublicStats: [],
     communityStats: null,
+    founderTrialClaimedAt: null,
+    founderTrialUntil: null,
+    membershipPlan: "free",
+    membershipUntil: null,
+    membershipWaitlistedAt: null,
     createdAt: now,
     updatedAt: now,
     updatedBy: user.uid,
@@ -1005,21 +1106,25 @@ async function removeDocuments(name, documents) {
 }
 
 async function clearMyRecords(user) {
-  const [weights, poops, sentReactions, receivedReactions] = await Promise.all([
+  const [weights, poops, sentReactions, receivedReactions, checkins, answers] = await Promise.all([
     queryAll("weight_entries", { ownerUid: user.uid }, [], 500),
     queryAll("poop_entries", { ownerUid: user.uid }, [], 500),
     queryAll("reactions", { fromUserUid: user.uid }, [], 500),
     queryAll("reactions", { toUserUid: user.uid }, [], 500),
+    queryAll("daily_checkins", { userUid: user.uid }, [], 500),
+    queryAll("daily_answers", { userUid: user.uid }, [], 500),
   ]);
   const reactions = [...new Map([...sentReactions, ...receivedReactions].map((item) => [item.id, item])).values()];
   await Promise.all([
     removeDocuments("weight_entries", weights),
     removeDocuments("poop_entries", poops),
     removeDocuments("reactions", reactions),
+    removeDocuments("daily_checkins", checkins),
+    removeDocuments("daily_answers", answers),
   ]);
   return response(200, {
     ok: true,
-    deleted: weights.length + poops.length + reactions.length,
+    deleted: weights.length + poops.length + reactions.length + checkins.length + answers.length,
   });
 }
 
@@ -1065,6 +1170,276 @@ async function removeOwnedDocument(user, collectionName, id) {
   }
   await db.collection(collectionName).doc(documentId).remove();
   return response(200, { ok: true });
+}
+
+function togetherDate(value) {
+  return parseDateString(value, true) || dateKeyUtc(Date.now());
+}
+
+function togetherPromptForDate(date) {
+  const timestamp = Date.parse(`${date}T00:00:00Z`);
+  const dayNumber = Number.isFinite(timestamp) ? Math.floor(timestamp / DAY) : Math.floor(Date.now() / DAY);
+  const index = Math.abs(dayNumber) % togetherPrompts.length;
+  return { id: `daily-${index}`, ...togetherPrompts[index] };
+}
+
+async function togetherHub(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const { couple, partner } = relationship;
+  const date = togetherDate(payload.date);
+  const prompt = togetherPromptForDate(date);
+  const [optionDocuments, decisionDocuments, checkinDocuments, answerDocuments] = await Promise.all([
+    queryAll("together_options", { coupleId: couple.id }, [], 80),
+    queryAll("together_decisions", { coupleId: couple.id }, [], 220),
+    queryAll("daily_checkins", { coupleId: couple.id, date }, [], 4),
+    queryAll("daily_answers", { coupleId: couple.id, date, promptId: prompt.id }, [], 4),
+  ]);
+  const membership = membershipCatalog(couple);
+  const historyFloor = Date.now() - membership.current.limits.decisionHistoryDays * DAY;
+  const options = optionDocuments
+    .filter((option) => option.active !== false)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .map(publicTogetherOption);
+  const decisions = decisionDocuments
+    .filter((decision) => decision.createdAt >= historyFloor)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 40)
+    .map(publicDecision);
+  const viewerAnswer = answerDocuments.find((answer) => answer.userUid === user.uid) || null;
+  const partnerAnswer = answerDocuments.find((answer) => answer.userUid === partner.uid) || null;
+
+  return response(200, {
+    date,
+    options,
+    decisions,
+    currentDecision: decisions.find((decision) => decision.status === "pending") || null,
+    checkins: checkinDocuments.map((checkin) => ({
+      userUid: checkin.userUid,
+      mood: Math.max(1, Math.min(5, Number(checkin.mood) || 3)),
+      moodLabel: moodLabels[Math.max(0, Math.min(4, (Number(checkin.mood) || 3) - 1))],
+      energy: Math.max(1, Math.min(5, Number(checkin.energy) || 3)),
+      note: cleanText(checkin.note, 40),
+      updatedAt: checkin.updatedAt || checkin.createdAt,
+    })),
+    prompt: {
+      ...prompt,
+      viewerChoice: viewerAnswer ? viewerAnswer.choice : null,
+      partnerChoice: viewerAnswer && partnerAnswer ? partnerAnswer.choice : null,
+      partnerAnswered: Boolean(partnerAnswer),
+      matched: viewerAnswer && partnerAnswer ? viewerAnswer.choice === partnerAnswer.choice : null,
+    },
+    membership,
+  });
+}
+
+async function addTogetherOption(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const label = cleanText(payload.label, 20);
+  const cuisine = cleanText(payload.cuisine, 10);
+  const note = cleanText(payload.note, 30);
+  if (label.length < 2) return jsonError("候选餐厅至少需要两个字。", 400, "OPTION_LABEL_INVALID");
+  const existing = await queryAll("together_options", { coupleId: relationship.couple.id }, [], 80);
+  const active = existing.filter((option) => option.active !== false);
+  const membership = membershipState(relationship.couple);
+  if (active.length >= membership.limits.activeRestaurantOptions) {
+    return jsonError(
+      membership.plan === "plus" ? "候选池已经装满 50 家啦。" : "免费候选池最多 8 家，可领取心动会员体验继续添加。",
+      409,
+      "OPTION_LIMIT_REACHED",
+    );
+  }
+  if (active.some((option) => cleanText(option.label, 20).toLowerCase() === label.toLowerCase())) {
+    return jsonError("这家店已经在候选池里了。", 409, "OPTION_DUPLICATE");
+  }
+  const now = Date.now();
+  const option = await addDocument("together_options", {
+    coupleId: relationship.couple.id,
+    type: "restaurant",
+    label,
+    cuisine,
+    budget: normalizeBudget(payload.budget),
+    note,
+    active: true,
+    createdBy: user.uid,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { option: publicTogetherOption(option) });
+}
+
+async function archiveTogetherOption(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const option = id ? await getDocument("together_options", id) : null;
+  if (!option || option.coupleId !== relationship.couple.id || option.active === false) {
+    return jsonError("没有找到这个候选餐厅。", 404, "OPTION_NOT_FOUND");
+  }
+  await updateDocument("together_options", id, { active: false, archivedBy: user.uid, updatedAt: Date.now() });
+  return response(200, { ok: true });
+}
+
+async function spinTogetherDecision(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const { couple } = relationship;
+  const mode = decisionModes.includes(payload.mode) ? payload.mode : "classic";
+  const membership = membershipState(couple);
+  if (mode !== "classic" && membership.plan !== "plus") {
+    return jsonError("这个抽签模式属于心动会员，可以先领取 7 天内测体验。", 403, "MEMBERSHIP_REQUIRED");
+  }
+  const [optionDocuments, decisionDocuments] = await Promise.all([
+    queryAll("together_options", { coupleId: couple.id }, [], 80),
+    queryAll("together_decisions", { coupleId: couple.id }, [], 100),
+  ]);
+  if (decisionDocuments.some((decision) => decision.status === "pending")) {
+    return jsonError("先确认或否决当前结果，再抽下一家吧。", 409, "DECISION_PENDING");
+  }
+  let candidates = optionDocuments.filter((option) => option.active !== false);
+  if (mode === "budget") {
+    const budget = normalizeBudget(payload.budget);
+    candidates = candidates.filter((option) => normalizeBudget(option.budget) === budget);
+  }
+  if (!candidates.length) return jsonError("候选池里还没有符合条件的餐厅。", 409, "NO_OPTIONS");
+  if (mode === "fresh") {
+    const recentIds = new Set(decisionDocuments
+      .filter((decision) => decision.createdAt >= Date.now() - 7 * DAY)
+      .map((decision) => decision.optionId));
+    const fresh = candidates.filter((option) => !recentIds.has(option.id));
+    if (fresh.length) candidates = fresh;
+  }
+  const selected = candidates[crypto.randomInt(candidates.length)];
+  const now = Date.now();
+  const decision = await addDocument("together_decisions", {
+    coupleId: couple.id,
+    optionId: selected.id,
+    optionLabel: selected.label,
+    cuisine: selected.cuisine,
+    budget: normalizeBudget(selected.budget),
+    mode,
+    status: "pending",
+    createdBy: user.uid,
+    confirmedByUids: [user.uid],
+    vetoedBy: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { decision: publicDecision(decision) });
+}
+
+async function respondTogetherDecision(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const action = payload.response === "confirm" ? "confirm" : payload.response === "veto" ? "veto" : null;
+  if (!action) return jsonError("没有认出这次选择。", 400, "DECISION_RESPONSE_INVALID");
+  const decision = id ? await getDocument("together_decisions", id) : null;
+  if (!decision || decision.coupleId !== relationship.couple.id) {
+    return jsonError("没有找到这次共同决定。", 404, "DECISION_NOT_FOUND");
+  }
+  if (decision.status !== "pending") return jsonError("这次决定已经结束啦。", 409, "DECISION_FINISHED");
+  const now = Date.now();
+  if (action === "veto") {
+    const updated = await updateDocument("together_decisions", id, {
+      status: "vetoed",
+      vetoedBy: user.uid,
+      updatedAt: now,
+    });
+    return response(200, { decision: publicDecision(updated) });
+  }
+  const confirmedByUids = [...new Set([...(decision.confirmedByUids || []), user.uid])]
+    .filter((uid) => relationship.couple.memberUids.includes(uid));
+  const status = relationship.couple.memberUids.every((uid) => confirmedByUids.includes(uid)) ? "confirmed" : "pending";
+  const updated = await updateDocument("together_decisions", id, { confirmedByUids, status, updatedAt: now });
+  return response(200, { decision: publicDecision(updated) });
+}
+
+async function saveDailyCheckin(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const date = togetherDate(payload.date);
+  const mood = Number(payload.mood);
+  const energy = Number(payload.energy);
+  if (!Number.isInteger(mood) || mood < 1 || mood > 5 || !Number.isInteger(energy) || energy < 1 || energy > 5) {
+    return jsonError("请选择今天的心情和能量。", 400, "CHECKIN_INVALID");
+  }
+  const note = cleanText(payload.note, 40);
+  const now = Date.now();
+  const id = `checkin_${sha256(`${relationship.couple.id}:${date}:${user.uid}`)}`;
+  const existing = await getDocument("daily_checkins", id);
+  await setDocument("daily_checkins", id, {
+    coupleId: relationship.couple.id,
+    userUid: user.uid,
+    date,
+    mood,
+    energy,
+    note,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  return response(200, { ok: true });
+}
+
+async function answerDailyQuestion(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const date = togetherDate(payload.date);
+  const prompt = togetherPromptForDate(date);
+  const choice = payload.choice === "a" ? "a" : payload.choice === "b" ? "b" : null;
+  if (!choice) return jsonError("请选择一个答案。", 400, "ANSWER_INVALID");
+  const now = Date.now();
+  const id = `answer_${sha256(`${relationship.couple.id}:${date}:${prompt.id}:${user.uid}`)}`;
+  await setDocument("daily_answers", id, {
+    coupleId: relationship.couple.id,
+    userUid: user.uid,
+    date,
+    promptId: prompt.id,
+    choice,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(200, { ok: true });
+}
+
+async function claimFounderTrial(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const current = membershipState(relationship.couple);
+  if (!current.trialAvailable) return jsonError("这片农场已经领取过内测体验啦。", 409, "TRIAL_ALREADY_CLAIMED");
+  const now = Date.now();
+  const founderTrialUntil = now + FOUNDER_TRIAL_DAYS * DAY;
+  const couple = await updateDocument("couples", relationship.couple.id, {
+    founderTrialClaimedAt: now,
+    founderTrialUntil,
+    updatedAt: now,
+    updatedBy: user.uid,
+  });
+  return response(200, { membership: membershipCatalog(couple) });
+}
+
+async function joinMembershipWaitlist(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const now = Date.now();
+  const plan = payload.plan === "yearly" ? "yearly" : "monthly";
+  const id = `waitlist_${relationship.couple.id}`;
+  await setDocument("membership_waitlist", id, {
+    coupleId: relationship.couple.id,
+    requestedBy: user.uid,
+    plan,
+    source: "miniprogram_v0.4",
+    createdAt: now,
+    updatedAt: now,
+  });
+  const couple = await updateDocument("couples", relationship.couple.id, {
+    membershipWaitlistedAt: now,
+    membershipWaitlistedPlan: plan,
+    updatedAt: now,
+    updatedBy: user.uid,
+  });
+  return response(200, { membership: membershipCatalog(couple) });
 }
 
 function communityAuthorSnapshot(user, couple) {
@@ -1489,6 +1864,15 @@ async function handleAction(user, action, payload, requestContext) {
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
     case "delete-identity": return deleteIdentity(user);
+    case "together-hub": return togetherHub(user, payload);
+    case "add-together-option": return addTogetherOption(user, payload);
+    case "archive-together-option": return archiveTogetherOption(user, payload);
+    case "spin-together-decision": return spinTogetherDecision(user, payload);
+    case "respond-together-decision": return respondTogetherDecision(user, payload);
+    case "save-daily-checkin": return saveDailyCheckin(user, payload);
+    case "answer-daily-question": return answerDailyQuestion(user, payload);
+    case "claim-founder-trial": return claimFounderTrial(user);
+    case "join-membership-waitlist": return joinMembershipWaitlist(user, payload);
     case "community-feed": return communityFeed(user, payload);
     case "update-community-settings": return updateCommunitySettings(user, payload, requestContext);
     case "create-community-post": return createCommunityPost(user, payload, requestContext);
@@ -1508,7 +1892,7 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.3.1",
+      version: "0.4.0",
       serverTime: Date.now(),
     });
   }
@@ -1524,7 +1908,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.3.1",
+        version: "0.4.0",
         serverTime: Date.now(),
       });
     } catch (error) {
