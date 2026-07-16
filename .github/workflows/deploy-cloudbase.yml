@@ -74,10 +74,9 @@ jobs:
       - name: 验证云函数
         run: |
           result="$(tcb fn invoke couple-tracker --data '{"action":"health"}' --env-id "$TCB_ENV_ID" --json --yes)"
-          printf '%s\n' "$result" | grep -q 'couple-tracker'
+          printf '%s\n' "$result" | node scripts/verify-cloudbase-health.cjs couple-tracker
           community_result="$(tcb fn invoke couple-tracker --data '{"action":"community-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
-          printf '%s\n' "$community_result" | grep -Eq '"service"[[:space:]]*:[[:space:]]*"community"'
-          printf '%s\n' "$community_result" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
+          printf '%s\n' "$community_result" | node scripts/verify-cloudbase-health.cjs community
 
       - name: 发布静态网站
         run: tcb hosting deploy cloudbase/dist / --env-id "$TCB_ENV_ID" --retry-count 5 --retry-interval 2000 --json --yes
