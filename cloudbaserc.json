@@ -8,8 +8,15 @@
       "dir": "./cloudbase/functions/couple-tracker",
       "runtime": "Nodejs18.15",
       "handler": "index.main",
-      "timeout": 15,
-      "memorySize": 256
+      "timeout": 30,
+      "memorySize": 256,
+      "triggers": [
+        {
+          "name": "couple-reminders",
+          "type": "timer",
+          "config": "0 */5 * * * * *"
+        }
+      ]
     }
   ]
 }

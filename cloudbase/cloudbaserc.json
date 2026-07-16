@@ -8,9 +8,16 @@
       "dir": "./functions/couple-tracker",
       "runtime": "Nodejs18.15",
       "handler": "index.main",
-      "timeout": 15,
+      "timeout": 30,
       "memorySize": 256,
-      "description": "我们俩的小田地：账户、配对、纪念日与共享记录"
+      "description": "我们俩的小田地：单人体验、情侣记录、熟人村庄与日程提醒",
+      "triggers": [
+        {
+          "name": "couple-reminders",
+          "type": "timer",
+          "config": "0 */5 * * * * *"
+        }
+      ]
     }
   ]
 }

@@ -13,6 +13,7 @@ type SharedMemo = {
   kind: MemoKind;
   title: string;
   note: string;
+  location: string;
   category: MemoCategory;
   dueAt: number | null;
   assignee: "both" | string;
@@ -96,6 +97,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
   const [kind, setKind] = useState<MemoKind>("task");
   const [title, setTitle] = useState("");
   const [note, setNote] = useState("");
+  const [location, setLocation] = useState("");
   const [category, setCategory] = useState<MemoCategory>("daily");
   const [assignee, setAssignee] = useState("both");
   const [hasDueAt, setHasDueAt] = useState(true);
@@ -141,6 +143,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
     setKind("task");
     setTitle("");
     setNote("");
+    setLocation("");
     setCategory("daily");
     setAssignee("both");
     setHasDueAt(true);
@@ -204,6 +207,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
       kind,
       title: title.trim(),
       note: note.trim(),
+      location: location.trim(),
       category,
       assignee,
       dueAt,
@@ -257,7 +261,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
   return (
     <>
       <View className="page-heading notebook-heading">
-        <Text className="kicker">我们俩的小田地 · 0.5.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.6.0</Text>
         <Text className="title">共同小本本</Text>
         <Text className="description">把约会、采购、家务和那些“别忘啦”放在同一个地方。</Text>
       </View>
@@ -267,10 +271,11 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
         <View className="memo-kind-row">{kinds.map((item) => <Button key={item.key} className={kind === item.key ? "active" : ""} onClick={() => { setKind(item.key); if (item.key === "memo") setHasDueAt(false); }}>{item.icon} {item.label}</Button>)}</View>
         <Input className="field" maxlength={30} value={title} onInput={(event) => setTitle(event.detail.value)} placeholder="例如：周六去看新电影" />
         <Textarea className="textarea" maxlength={200} value={note} onInput={(event) => setNote(event.detail.value)} placeholder="补充地点、清单或想对 TA 说的话（选填）" />
+        <Input className="field" maxlength={20} value={location} onInput={(event) => setLocation(event.detail.value)} placeholder="📍 地点（选填，例如 幸福电影院）" />
         <View className="memo-category-row">{categories.map((item) => <Button key={item.key} className={category === item.key ? "active" : ""} onClick={() => setCategory(item.key)}>{item.label}</Button>)}</View>
         <Picker mode="selector" range={assigneeOptions.map((item) => item.label)} value={Math.max(0, assigneeOptions.findIndex((item) => item.value === assignee))} onChange={(event) => setAssignee(assigneeOptions[Number(event.detail.value)]?.value || "both")}><View className="picker-field settings-picker">👫 交给：{assigneeOptions.find((item) => item.value === assignee)?.label}<Text>修改 ›</Text></View></Picker>
         <View className="setting-row memo-time-switch"><View><Text className="activity-title">设置日期时间</Text><Text className="role">事件、约会和有截止时间的待办</Text></View><Switch checked={hasDueAt} color="#7457ff" onChange={(event) => { setHasDueAt(event.detail.value); if (!event.detail.value) { setRecurrence("none"); setReminderEnabled(false); } }} /></View>
-        {hasDueAt && <><View className="date-row"><Picker mode="date" value={dueDate} onChange={(event) => setDueDate(String(event.detail.value))}><View className="picker-field">📅 {dueDate}</View></Picker><Picker mode="time" value={dueTime} onChange={(event) => setDueTime(String(event.detail.value))}><View className="picker-field">🕐 {dueTime}</View></Picker></View><Picker mode="selector" range={recurrences.map((item) => item.label)} value={recurrences.findIndex((item) => item.key === recurrence)} onChange={(event) => setRecurrence(recurrences[Number(event.detail.value)]?.key || "none")}><View className="picker-field settings-picker">🔁 {recurrences.find((item) => item.key === recurrence)?.label}<Text>修改 ›</Text></View></Picker><View className="setting-row"><View><Text className="activity-title">微信提醒</Text><Text className="role">事项前 1 小时提醒；每次需用户授权</Text></View><Switch checked={reminderEnabled} color="#7457ff" onChange={(event) => setReminderEnabled(event.detail.value)} /></View></>}
+        {hasDueAt && <><View className="date-row"><Picker mode="date" value={dueDate} onChange={(event) => setDueDate(String(event.detail.value))}><View className="picker-field">📅 {dueDate}</View></Picker><Picker mode="time" value={dueTime} onChange={(event) => setDueTime(String(event.detail.value))}><View className="picker-field">🕐 {dueTime}</View></Picker></View><Picker mode="selector" range={recurrences.map((item) => item.label)} value={recurrences.findIndex((item) => item.key === recurrence)} onChange={(event) => setRecurrence(recurrences[Number(event.detail.value)]?.key || "none")}><View className="picker-field settings-picker">🔁 {recurrences.find((item) => item.key === recurrence)?.label}<Text>修改 ›</Text></View></Picker><View className="setting-row"><View><Text className="activity-title">微信订阅提醒</Text><Text className="role">事项前 1 小时发送“日程提醒”；每次需用户授权</Text></View><Switch checked={reminderEnabled} color="#7457ff" onChange={(event) => setReminderEnabled(event.detail.value)} /></View></>}
         <Button className="primary" loading={busy} onClick={create}>放进共同小本本</Button>
       </View>
 
@@ -286,7 +291,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
           const assignedToMe = item.assignee === "both" || item.assignee === viewer.uid;
           const mineDone = item.completedByUids.includes(viewer.uid);
           const waitingPartner = item.assignee === "both" && mineDone && !item.completed;
-          return <View className={`memo-card ${item.status}`} key={item.id}><View className="memo-icon">{meta.icon}</View><View className="memo-copy"><View className="memo-title-row"><Text className="activity-title">{item.title}</Text><Text className={`memo-category ${item.category}`}>{categories.find((categoryItem) => categoryItem.key === item.category)?.label}</Text></View>{item.note && <Text className="memo-note">{item.note}</Text>}<Text className="role">{formatDue(item.dueAt)} · {item.assignee === "both" ? "两个人" : item.assignee === viewer.uid ? "交给我" : `交给${partner.nickname}`}{item.recurrence !== "none" ? ` · ${recurrences.find((rule) => rule.key === item.recurrence)?.label}` : ""}</Text>{waitingPartner && <Text className="memo-waiting">✓ 我已完成，等 {partner.nickname}</Text>}<View className="memo-actions">{item.dueAt && <Button onClick={() => addToCalendar(item)}>加日历</Button>}{item.status === "open" && assignedToMe && <Button className={mineDone ? "done" : "primary-mini"} loading={busy} onClick={() => act("toggle-shared-memo", { id: item.id }, mineDone ? "已撤销完成" : "完成一小步")}>{mineDone ? "撤销" : "完成"}</Button>}{item.createdBy === viewer.uid && <Button className="danger-mini" onClick={() => remove(item)}>删除</Button>}</View></View></View>;
+          return <View className={`memo-card ${item.status}`} key={item.id}><View className="memo-icon">{meta.icon}</View><View className="memo-copy"><View className="memo-title-row"><Text className="activity-title">{item.title}</Text><Text className={`memo-category ${item.category}`}>{categories.find((categoryItem) => categoryItem.key === item.category)?.label}</Text></View>{item.note && <Text className="memo-note">{item.note}</Text>}{item.location && <Text className="memo-location">📍 {item.location}</Text>}<Text className="role">{formatDue(item.dueAt)} · {item.assignee === "both" ? "两个人" : item.assignee === viewer.uid ? "交给我" : `交给${partner.nickname}`}{item.recurrence !== "none" ? ` · ${recurrences.find((rule) => rule.key === item.recurrence)?.label}` : ""}</Text>{waitingPartner && <Text className="memo-waiting">✓ 我已完成，等 {partner.nickname}</Text>}<View className="memo-actions">{item.dueAt && <Button onClick={() => addToCalendar(item)}>加日历</Button>}{item.status === "open" && assignedToMe && <Button className={mineDone ? "done" : "primary-mini"} loading={busy} onClick={() => act("toggle-shared-memo", { id: item.id }, mineDone ? "已撤销完成" : "完成一小步")}>{mineDone ? "撤销" : "完成"}</Button>}{item.createdBy === viewer.uid && <Button className="danger-mini" onClick={() => remove(item)}>删除</Button>}</View></View></View>;
         })}
         {!visibleItems.length && <View className="panel empty">{filter === "open" ? "🌱 暂时没有待办，记下一件想一起完成的事吧。" : "完成的事情会在这里留下脚印。"}</View>}
       </View>

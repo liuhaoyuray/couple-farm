@@ -122,11 +122,19 @@ const originalLoad = Module._load;
 const fakeCloudbase = createFakeCloudbase();
 let textSafetyResponse = { result: { suggest: "pass" } };
 let imageSafetyResponse = { result: { suggest: "pass" } };
+const sentSubscriptionMessages = [];
+const memoTemplateId = "7yUYdsTH-aJGkSxaFaMu7LLxkGTChtD6WoJVg6LGcuE";
 const fakeWxCloud = {
   DYNAMIC_CURRENT_ENV: "current",
   init() {},
   downloadFile: async () => ({ fileContent: Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]) }),
   openapi: {
+    subscribeMessage: {
+      send: async (payload) => {
+        sentSubscriptionMessages.push(payload);
+        return { errCode: 0, errMsg: "openapi.subscribeMessage.send:ok" };
+      },
+    },
     security: {
       msgSecCheck: async () => {
         if (textSafetyResponse instanceof Error) throw textSafetyResponse;
@@ -163,7 +171,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.5.0");
+  assert.equal(result.data.version, "0.6.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -171,7 +179,15 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.5.0");
+  assert.equal(result.data.version, "0.6.0");
+});
+
+test("verifies the private village schema without a user session", async () => {
+  const result = await invoke(null, "village-health");
+  assert.equal(result.status, 200);
+  assert.equal(result.data.ok, true);
+  assert.equal(result.data.service, "village");
+  assert.equal(result.data.version, "0.6.0");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -249,6 +265,17 @@ test("creates profiles and securely pairs two different accounts", async () => {
   await invoke("browser-b", "bootstrap", {}, secondToken);
   await invoke("browser-b", "update-profile", { nickname: "拉粑臭", avatar: "🐰" }, secondToken);
 
+  const soloWeight = await invoke("browser-a", "add-weight", {
+    weightKg: 68.8,
+    occurredAt: Date.now(),
+  }, firstToken);
+  const soloPoop = await invoke("browser-b", "add-poop", { occurredAt: Date.now() }, secondToken);
+  const soloDashboard = await invoke("browser-a", "bootstrap", {}, firstToken);
+  assert.equal(soloDashboard.status, 200);
+  assert.equal(soloDashboard.data.mode, "solo");
+  assert.equal(soloDashboard.data.weights.length, 1);
+  assert.equal(soloDashboard.data.partner, null);
+
   const invite = await invoke("browser-a", "create-invite", {}, firstToken);
   assert.equal(invite.status, 201);
   assert.match(invite.data.code, /^[2-9A-HJ-NP-Z]{8}$/);
@@ -262,6 +289,11 @@ test("creates profiles and securely pairs two different accounts", async () => {
   assert.equal(paired.data.viewer.nickname, "拉粑臭");
   assert.equal(paired.data.partner.nickname, "鸡包蛋");
   assert.ok(paired.data.couple.id.startsWith("couple_"));
+  assert.equal(paired.data.weights.some((entry) => entry.id === soloWeight.data.entry.id), true);
+  assert.equal(paired.data.poops.some((entry) => entry.id === soloPoop.data.entry.id), true);
+
+  await invoke("browser-a", "delete-weight", { id: soloWeight.data.entry.id }, firstToken);
+  await invoke("browser-b", "delete-poop", { id: soloPoop.data.entry.id }, secondToken);
 
   const reused = await invoke("browser-b", "accept-invite", { code: invite.data.code }, secondToken);
   assert.equal(reused.status, 409);
@@ -416,11 +448,36 @@ test("supports a shared notebook with assignments, recurring tasks and reminder 
   const subscription = await invoke(
     { uid: "browser-a", openId: "openid-a", appId: "wx-app" },
     "save-subscription-consent",
-    { templateKey: "shared_memo", templateId: "test-template-id", result: "accept" },
+    { templateKey: "shared_memo", templateId: memoTemplateId, result: "accept" },
     firstToken,
     "mini",
   );
   assert.equal(subscription.status, 201);
+
+  const reminderDueAt = Date.now() + 5 * 60 * 1000;
+  const reminder = await invoke("browser-a", "create-shared-memo", {
+    kind: "event",
+    title: "出发去看电影",
+    note: "记得带票",
+    location: "幸福电影院",
+    category: "date",
+    assignee: firstUid,
+    recurrence: "none",
+    dueAt: reminderDueAt,
+    reminderEnabled: true,
+    remindAt: Date.now() - 1000,
+  }, firstToken);
+  assert.equal(reminder.status, 201);
+
+  const sweep = await main({ Type: "Timer", triggerName: "couple-reminders" });
+  assert.equal(sweep.status, 200);
+  assert.equal(sweep.data.sent, 1);
+  assert.equal(sentSubscriptionMessages.length, 1);
+  assert.equal(sentSubscriptionMessages[0].templateId, memoTemplateId);
+  assert.deepEqual(sentSubscriptionMessages[0].data.thing2, { value: "出发去看电影" });
+  assert.deepEqual(sentSubscriptionMessages[0].data.thing10, { value: "幸福电影院" });
+  assert.deepEqual(sentSubscriptionMessages[0].data.thing17, { value: "鸡包蛋改" });
+  assert.match(sentSubscriptionMessages[0].data.time6.value, /^\d{4}年\d{2}月\d{2}日 \d{2}:\d{2}$/);
 });
 
 test("supports daily couple rituals, restaurant decisions and membership trials", async () => {
@@ -598,6 +655,57 @@ test("supports a moderated community feed with images, follows, likes, comments 
   }, firstToken, "mini");
   assert.equal(refollowBlocked.status, 409);
   assert.equal(refollowBlocked.data.code, "COMMUNITY_FARM_BLOCKED");
+
+  const createdVillage = await invoke(firstMiniCaller, "create-village", {
+    name: "周末吃喝村",
+    description: "只和认识的情侣一起分享生活",
+  }, firstToken, "mini");
+  assert.equal(createdVillage.status, 200);
+  assert.equal(createdVillage.data.village.memberCount, 1);
+  assert.match(createdVillage.data.village.inviteCode, /^[2-9A-HJ-NP-Z]{8}$/);
+
+  const joinedVillage = await invoke(secondMiniCaller, "join-village", {
+    code: createdVillage.data.village.inviteCode,
+  }, thirdToken, "mini");
+  assert.equal(joinedVillage.status, 200);
+  assert.equal(joinedVillage.data.members.length, 2);
+
+  const villagePost = await invoke(secondMiniCaller, "create-village-post", {
+    content: "周六有人一起吃火锅吗？",
+    topic: "daily",
+  }, thirdToken, "mini");
+  assert.equal(villagePost.status, 201);
+
+  const villageFeed = await invoke(firstMiniCaller, "village-feed", {}, firstToken, "mini");
+  assert.equal(villageFeed.status, 200);
+  assert.equal(villageFeed.data.serviceState, "healthy");
+  assert.equal(villageFeed.data.posts.length, 1);
+  assert.equal(villageFeed.data.posts[0].content, "周六有人一起吃火锅吗？");
+
+  const villageLike = await invoke(firstMiniCaller, "toggle-village-like", {
+    postId: villagePost.data.post.id,
+  }, firstToken, "mini");
+  assert.equal(villageLike.status, 200);
+  assert.equal(villageLike.data.likeCount, 1);
+  const villageComment = await invoke(firstMiniCaller, "add-village-comment", {
+    postId: villagePost.data.post.id,
+    content: "报名，我们也去！",
+  }, firstToken, "mini");
+  assert.equal(villageComment.status, 201);
+
+  fakeCloudbase.setReadFailure("community_comments", true);
+  const degradedVillage = await invoke(firstMiniCaller, "village-feed", {}, firstToken, "mini");
+  fakeCloudbase.setReadFailure("community_comments", false);
+  assert.equal(degradedVillage.status, 200);
+  assert.equal(degradedVillage.data.serviceState, "degraded");
+  assert.equal(degradedVillage.data.posts.length, 1);
+
+  const leftVillage = await invoke(secondMiniCaller, "leave-village", {}, thirdToken, "mini");
+  assert.equal(leftVillage.status, 200);
+  const afterLeave = await invoke(secondMiniCaller, "village-hub", {}, thirdToken, "mini");
+  assert.equal(afterLeave.data.village, null);
+  const dissolvedVillage = await invoke(firstMiniCaller, "dissolve-village", {}, firstToken, "mini");
+  assert.equal(dissolvedVillage.status, 200);
 
   textSafetyResponse = new Error("moderation unavailable");
   const disabled = await invoke(firstMiniCaller, "update-community-settings", {

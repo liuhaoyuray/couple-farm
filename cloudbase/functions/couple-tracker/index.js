@@ -36,6 +36,10 @@ const COLLECTIONS = [
   "membership_waitlist",
   "shared_memos",
   "notification_subscriptions",
+  "notification_deliveries",
+  "villages",
+  "village_members",
+  "village_invites",
 ];
 
 const avatarChoices = [
@@ -80,6 +84,8 @@ const sharedMemoKinds = ["memo", "task", "event"];
 const sharedMemoCategories = ["daily", "date", "home", "shopping", "important", "other"];
 const sharedMemoRecurrences = ["none", "daily", "weekly", "monthly"];
 const notificationTemplateKeys = ["shared_memo", "health_reminder", "anniversary"];
+const WECHAT_MEMO_TEMPLATE_ID = "7yUYdsTH-aJGkSxaFaMu7LLxkGTChtD6WoJVg6LGcuE";
+const VILLAGE_MEMBER_LIMIT = 24;
 const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
@@ -765,10 +771,73 @@ async function requireCouple(user) {
   return { couple, partner };
 }
 
+function soloSpaceId(uid) {
+  return `solo_${sha256(String(uid)).slice(0, 40)}`;
+}
+
+async function migrateSoloRecords(uid, coupleId) {
+  const soloId = soloSpaceId(uid);
+  const [weights, poops] = await Promise.all([
+    queryAll("weight_entries", { ownerUid: uid }, [], 500),
+    queryAll("poop_entries", { ownerUid: uid }, [], 500),
+  ]);
+  const pendingWeights = weights.filter((item) => item.coupleId === soloId);
+  const pendingPoops = poops.filter((item) => item.coupleId === soloId);
+  await Promise.all([
+    ...pendingWeights.map((item) => updateDocument("weight_entries", item.id, {
+      coupleId,
+      migratedAt: Date.now(),
+    })),
+    ...pendingPoops.map((item) => updateDocument("poop_entries", item.id, {
+      coupleId,
+      migratedAt: Date.now(),
+    })),
+  ]);
+  return pendingWeights.length + pendingPoops.length;
+}
+
+async function readSoloDashboard(user) {
+  const now = Date.now();
+  const spaceId = soloSpaceId(user.uid);
+  const [allWeights, allPoops] = await Promise.all([
+    queryAll("weight_entries", { ownerUid: user.uid }, [], 500),
+    queryAll("poop_entries", { ownerUid: user.uid }, [], 500),
+  ]);
+  const weights = allWeights
+    .filter((item) => item.coupleId === spaceId && item.recordedAt >= now - 190 * DAY)
+    .sort((left, right) => left.recordedAt - right.recordedAt);
+  const poops = allPoops
+    .filter((item) => item.coupleId === spaceId && item.occurredAt >= now - 45 * DAY)
+    .sort((left, right) => left.occurredAt - right.occurredAt);
+  return response(200, {
+    mode: "solo",
+    viewer: publicUser(user, true),
+    partner: null,
+    couple: null,
+    weights,
+    poops,
+    reactions: [],
+    anniversaries: [],
+    sharedMemos: [],
+    serverTime: now,
+  });
+}
+
+async function recordSpaceForUser(user) {
+  if (!user.coupleId) return { id: soloSpaceId(user.uid), couple: null };
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship;
+  return { id: relationship.couple.id, couple: relationship.couple };
+}
+
 async function readDashboard(user) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const { couple, partner } = relationship;
+  await Promise.all([
+    migrateSoloRecords(user.uid, couple.id),
+    migrateSoloRecords(partner.uid, couple.id),
+  ]);
   const now = Date.now();
   const [weights, poops, reactions, anniversaries, sharedMemoDocuments] = await Promise.all([
     queryAll(
@@ -824,22 +893,12 @@ async function readDashboard(user) {
 
 async function bootstrap(user) {
   if (!user.coupleId) {
-    return response(200, {
-      viewer: publicUser(user, true),
-      partner: null,
-      couple: null,
-      serverTime: Date.now(),
-    });
+    return readSoloDashboard(user);
   }
   const dashboard = await readDashboard(user);
   if (dashboard.status === 409 && dashboard.data.code === "PAIRING_REQUIRED") {
     const refreshed = await getDocument("users", user.uid);
-    return response(200, {
-      viewer: publicUser(refreshed, true),
-      partner: null,
-      couple: null,
-      serverTime: Date.now(),
-    });
+    return readSoloDashboard(refreshed);
   }
   return dashboard;
 }
@@ -989,6 +1048,7 @@ function publicSharedMemo(memo, couple) {
     kind: sharedMemoKinds.includes(memo.kind) ? memo.kind : "memo",
     title: cleanText(memo.title, 30),
     note: cleanText(memo.note, 200),
+    location: cleanText(memo.location, 20),
     category: sharedMemoCategories.includes(memo.category) ? memo.category : "other",
     dueAt: Number.isFinite(Number(memo.dueAt)) ? Number(memo.dueAt) : null,
     assignee,
@@ -1009,6 +1069,7 @@ function sharedMemoFields(payload, couple, current = null) {
   const kind = sharedMemoKinds.includes(payload.kind) ? payload.kind : current?.kind || "memo";
   const title = cleanText(payload.title ?? current?.title, 30);
   const note = cleanText(payload.note ?? current?.note, 200);
+  const location = cleanText(payload.location ?? current?.location, 20);
   const category = sharedMemoCategories.includes(payload.category) ? payload.category : current?.category || "other";
   const assignee = normalizeMemoAssignee(payload.assignee ?? current?.assignee, couple);
   const recurrence = sharedMemoRecurrences.includes(payload.recurrence)
@@ -1028,7 +1089,7 @@ function sharedMemoFields(payload, couple, current = null) {
   if (recurrence !== "none" && !dueAt) {
     return { error: jsonError("重复事项需要先设置日期时间。", 400, "MEMO_RECURRENCE_REQUIRES_DUE") };
   }
-  return { kind, title, note, category, assignee, recurrence, dueAt, reminderEnabled, remindAt };
+  return { kind, title, note, location, category, assignee, recurrence, dueAt, reminderEnabled, remindAt };
 }
 
 function nextRecurringTimestamp(timestamp, recurrence) {
@@ -1057,8 +1118,8 @@ async function sharedNotebook(user) {
     items,
     notification: {
       availableQuota: grants.filter((grant) => grant.active !== false && Number(grant.remainingQuota) > 0).length,
-      configured: Boolean(process.env.WECHAT_MEMO_TEMPLATE_ID),
-      templateId: cleanText(process.env.WECHAT_MEMO_TEMPLATE_ID, 128) || null,
+      configured: true,
+      templateId: WECHAT_MEMO_TEMPLATE_ID,
     },
     serverTime: Date.now(),
   });
@@ -1151,6 +1212,8 @@ async function toggleSharedMemo(user, payload) {
     };
     delete nextFields.id;
     delete nextFields.completedAt;
+    delete nextFields.reminderSentAt;
+    delete nextFields.reminderSentToUids;
     nextItem = await setDocument("shared_memos", nextId, nextFields);
   }
   return response(200, {
@@ -1183,6 +1246,9 @@ async function saveSubscriptionConsent(user, payload, requestContext) {
   if (!notificationTemplateKeys.includes(templateKey) || !templateId) {
     return jsonError("订阅消息模板不正确。", 400, "SUBSCRIPTION_TEMPLATE_INVALID");
   }
+  if (templateKey === "shared_memo" && templateId !== WECHAT_MEMO_TEMPLATE_ID) {
+    return jsonError("日程提醒模板已经更新，请刷新后重新授权。", 409, "SUBSCRIPTION_TEMPLATE_OUTDATED");
+  }
   if (!requestContext?.platformCaller?.openId || requestContext.channel !== "mini") {
     return jsonError("订阅消息只能从微信小程序开启。", 403, "SUBSCRIPTION_MINI_ONLY");
   }
@@ -1202,6 +1268,147 @@ async function saveSubscriptionConsent(user, payload, requestContext) {
     updatedAt: now,
   });
   return response(201, { ok: true, remainingQuota: 1 });
+}
+
+function formatWechatReminderTime(timestamp) {
+  const date = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${year}年${month}月${day}日 ${hour}:${minute}`;
+}
+
+function reminderMiniProgramState() {
+  const state = cleanText(process.env.WECHAT_MINIPROGRAM_STATE, 16);
+  return ["developer", "trial", "formal"].includes(state) ? state : "trial";
+}
+
+async function sendMemoReminder(memo, couple, targetUid, source) {
+  const deliveryId = `delivery_${sha256(`${memo.id}:${targetUid}:${WECHAT_MEMO_TEMPLATE_ID}`).slice(0, 48)}`;
+  const existing = await getDocument("notification_deliveries", deliveryId);
+  if (existing?.status === "sent") return { status: "already-sent" };
+  if (existing?.status === "sending" && existing.updatedAt > Date.now() - 2 * 60 * 1000) {
+    return { status: "in-progress" };
+  }
+  const grants = await queryAll("notification_subscriptions", { userUid: targetUid }, [], 100);
+  const grant = grants
+    .filter((item) => item.active !== false)
+    .filter((item) => item.templateId === WECHAT_MEMO_TEMPLATE_ID)
+    .filter((item) => Number(item.remainingQuota) > 0 && item.openId)
+    .sort((left, right) => left.acceptedAt - right.acceptedAt)[0];
+  if (!grant) return { status: "no-quota" };
+
+  const now = Date.now();
+  await setDocument("notification_deliveries", deliveryId, {
+    memoId: memo.id,
+    coupleId: couple.id,
+    userUid: targetUid,
+    grantId: grant.id,
+    templateId: WECHAT_MEMO_TEMPLATE_ID,
+    status: "sending",
+    source: cleanText(source, 32),
+    attempts: Number(existing?.attempts || 0) + 1,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+
+  try {
+    const publisher = await getDocument("users", memo.createdBy);
+    await wxCloud.openapi.subscribeMessage.send({
+      touser: grant.openId,
+      templateId: WECHAT_MEMO_TEMPLATE_ID,
+      page: "pages/index/index",
+      miniprogramState: reminderMiniProgramState(),
+      lang: "zh_CN",
+      data: {
+        thing2: { value: cleanText(memo.title, 20) || "共同事项提醒" },
+        time6: { value: formatWechatReminderTime(memo.dueAt) },
+        thing10: { value: cleanText(memo.location, 20) || "未填写" },
+        thing17: { value: cleanText(publisher?.nickname, 20) || "我的伴侣" },
+      },
+    });
+    await Promise.all([
+      updateDocument("notification_deliveries", deliveryId, {
+        status: "sent",
+        sentAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+      updateDocument("notification_subscriptions", grant.id, {
+        remainingQuota: Math.max(0, Number(grant.remainingQuota) - 1),
+        active: Number(grant.remainingQuota) > 1,
+        lastUsedAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    ]);
+    return { status: "sent" };
+  } catch (error) {
+    await updateDocument("notification_deliveries", deliveryId, {
+      status: "failed",
+      error: errorDetails(error),
+      updatedAt: Date.now(),
+    });
+    console.warn("memo reminder delivery failed", {
+      memoId: memo.id,
+      source: cleanText(source, 32),
+      ...errorDetails(error),
+    });
+    return { status: "failed" };
+  }
+}
+
+async function dispatchDueReminders(source = "timer") {
+  const now = Date.now();
+  const openMemos = await queryAll("shared_memos", { status: "open" }, [], 500);
+  const dueMemos = openMemos
+    .filter((memo) => memo.reminderEnabled)
+    .filter((memo) => Number.isFinite(Number(memo.remindAt)) && Number(memo.remindAt) <= now)
+    .filter((memo) => Number.isFinite(Number(memo.dueAt)) && Number(memo.dueAt) >= now - 12 * 60 * 60 * 1000)
+    .sort((left, right) => Number(left.remindAt) - Number(right.remindAt))
+    .slice(0, 20);
+  let sent = 0;
+  let failed = 0;
+  let withoutQuota = 0;
+  for (const memo of dueMemos) {
+    const couple = await getDocument("couples", memo.coupleId);
+    if (!couple || couple.status !== "active") continue;
+    const assignee = normalizeMemoAssignee(memo.assignee, couple);
+    const targetUids = assignee === "both" ? couple.memberUids : [assignee];
+    const delivered = new Set(Array.isArray(memo.reminderSentToUids) ? memo.reminderSentToUids : []);
+    for (const targetUid of targetUids.filter((uid) => !delivered.has(uid))) {
+      const result = await sendMemoReminder(memo, couple, targetUid, source);
+      if (result.status === "sent" || result.status === "already-sent") {
+        delivered.add(targetUid);
+        if (result.status === "sent") sent += 1;
+      } else if (result.status === "no-quota") withoutQuota += 1;
+      else if (result.status === "failed") failed += 1;
+    }
+    const allDelivered = targetUids.every((uid) => delivered.has(uid));
+    await updateDocument("shared_memos", memo.id, {
+      reminderSentToUids: [...delivered],
+      reminderSentAt: allDelivered ? Date.now() : null,
+      updatedAt: Date.now(),
+    });
+  }
+  return { ok: true, scanned: dueMemos.length, sent, failed, withoutQuota };
+}
+
+let reminderSweepPromise;
+let lastReminderSweepAt = 0;
+
+function maybeDispatchDueReminders(source, force = false) {
+  const now = Date.now();
+  if (!force && lastReminderSweepAt > now - 60 * 1000) {
+    return reminderSweepPromise || Promise.resolve({ ok: true, skipped: true });
+  }
+  if (!reminderSweepPromise) {
+    lastReminderSweepAt = now;
+    reminderSweepPromise = dispatchDueReminders(source).finally(() => {
+      reminderSweepPromise = undefined;
+    });
+  }
+  return reminderSweepPromise;
 }
 
 async function createInvite(user) {
@@ -1295,6 +1502,7 @@ async function unbind(user) {
   if (relationship.error) return relationship.error;
   const { couple, partner } = relationship;
   const now = Date.now();
+  await detachCoupleFromVillage(couple, user.uid);
   await updateDocument("couples", couple.id, {
     status: "ended",
     communityEnabled: false,
@@ -1310,8 +1518,8 @@ async function unbind(user) {
 }
 
 async function addWeight(user, payload) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const space = await recordSpaceForUser(user);
+  if (space.error) return space.error;
   const weightKg = Number(payload.weightKg);
   const recordedAt = parseOccurrence(payload.occurredAt);
   if (!Number.isFinite(weightKg) || weightKg < 25 || weightKg > 250) {
@@ -1319,7 +1527,7 @@ async function addWeight(user, payload) {
   }
   if (!recordedAt) return jsonError("记录时间不正确，请重新选择。", 400, "TIME_INVALID");
   const entry = await addDocument("weight_entries", {
-    coupleId: relationship.couple.id,
+    coupleId: space.id,
     ownerUid: user.uid,
     weightKg: Math.round(weightKg * 10) / 10,
     recordedAt,
@@ -1329,12 +1537,12 @@ async function addWeight(user, payload) {
 }
 
 async function addPoop(user, payload) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const space = await recordSpaceForUser(user);
+  if (space.error) return space.error;
   const occurredAt = parseOccurrence(payload.occurredAt);
   if (!occurredAt) return jsonError("记录时间不正确，请重新选择。", 400, "TIME_INVALID");
   const entry = await addDocument("poop_entries", {
-    coupleId: relationship.couple.id,
+    coupleId: space.id,
     ownerUid: user.uid,
     occurredAt,
     createdAt: Date.now(),
@@ -1343,11 +1551,11 @@ async function addPoop(user, payload) {
 }
 
 async function updateWeight(user, payload) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const space = await recordSpaceForUser(user);
+  if (space.error) return space.error;
   const id = cleanText(payload.id, 128);
   const current = id ? await getDocument("weight_entries", id) : null;
-  if (!current || current.ownerUid !== user.uid || current.coupleId !== relationship.couple.id) {
+  if (!current || current.ownerUid !== user.uid || current.coupleId !== space.id) {
     return jsonError("只能修改自己的体重记录。", 403, "RECORD_FORBIDDEN");
   }
   const weightKg = Number(payload.weightKg);
@@ -1365,11 +1573,11 @@ async function updateWeight(user, payload) {
 }
 
 async function updatePoop(user, payload) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const space = await recordSpaceForUser(user);
+  if (space.error) return space.error;
   const id = cleanText(payload.id, 128);
   const current = id ? await getDocument("poop_entries", id) : null;
-  if (!current || current.ownerUid !== user.uid || current.coupleId !== relationship.couple.id) {
+  if (!current || current.ownerUid !== user.uid || current.coupleId !== space.id) {
     return jsonError("只能修改自己的如厕记录。", 403, "RECORD_FORBIDDEN");
   }
   const occurredAt = parseOccurrence(payload.occurredAt);
@@ -1442,13 +1650,13 @@ async function react(user, payload) {
 }
 
 async function removeOwnedDocument(user, collectionName, id) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const space = await recordSpaceForUser(user);
+  if (space.error) return space.error;
   const documentId = cleanText(id, 128);
   if (!documentId) return jsonError("没有找到这条记录。", 404, "RECORD_NOT_FOUND");
   const document = await getDocument(collectionName, documentId);
-  if (!document || document.ownerUid !== user.uid || document.coupleId !== relationship.couple.id) {
-    return jsonError("只能删除自己在当前关系里的记录。", 403, "RECORD_FORBIDDEN");
+  if (!document || document.ownerUid !== user.uid || document.coupleId !== space.id) {
+    return jsonError("只能删除自己当前田地里的记录。", 403, "RECORD_FORBIDDEN");
   }
   await db.collection(collectionName).doc(documentId).remove();
   return response(200, { ok: true });
@@ -2133,6 +2341,533 @@ async function blockCommunityFarm(user, payload) {
   return response(200, { ok: true });
 }
 
+function villageMemberId(villageId, coupleId) {
+  return `village_member_${sha256(`${villageId}:${coupleId}`).slice(0, 44)}`;
+}
+
+function publicVillage(village) {
+  if (!village) return null;
+  return {
+    id: village.id,
+    name: cleanCommunityText(village.name, 16),
+    description: cleanCommunityText(village.description, 80),
+    ownerCoupleId: village.ownerCoupleId,
+    inviteCode: cleanText(village.inviteCode, 8),
+    inviteExpiresAt: Number(village.inviteExpiresAt) || null,
+    memberCount: Math.max(0, Number(village.memberCount) || 0),
+    createdAt: village.createdAt,
+    updatedAt: village.updatedAt || village.createdAt,
+  };
+}
+
+async function activeVillageMembership(couple) {
+  if (!couple) return null;
+  if (couple.villageId) {
+    const direct = await getDocument("village_members", villageMemberId(couple.villageId, couple.id));
+    if (direct?.status === "active") return direct;
+  }
+  const memberships = await queryAll("village_members", { coupleId: couple.id }, [], 30);
+  const active = memberships.find((item) => item.status === "active") || null;
+  if (active && couple.villageId !== active.villageId) {
+    await updateDocument("couples", couple.id, { villageId: active.villageId, updatedAt: Date.now() });
+  }
+  return active;
+}
+
+async function requireVillage(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship;
+  const membership = await activeVillageMembership(relationship.couple);
+  if (!membership) return { error: jsonError("先创建或加入一个熟人村庄。", 409, "VILLAGE_REQUIRED") };
+  const village = await getDocument("villages", membership.villageId);
+  if (!village || village.status !== "active") {
+    await updateDocument("village_members", membership.id, { status: "inactive", updatedAt: Date.now() });
+    await updateDocument("couples", relationship.couple.id, { villageId: null, updatedAt: Date.now() });
+    return { error: jsonError("这个村庄已经结束，请创建或加入新的村庄。", 410, "VILLAGE_INACTIVE") };
+  }
+  return { ...relationship, membership, village };
+}
+
+async function villageMemberSnapshots(villageId) {
+  const memberships = await queryAll("village_members", { villageId }, [], VILLAGE_MEMBER_LIMIT + 10);
+  const activeMemberships = memberships
+    .filter((item) => item.status === "active")
+    .sort((left, right) => left.joinedAt - right.joinedAt);
+  const snapshots = [];
+  for (const membership of activeMemberships) {
+    const couple = await getDocument("couples", membership.coupleId);
+    if (!couple || couple.status !== "active") continue;
+    const users = (await Promise.all(couple.memberUids.map((uid) => getDocument("users", uid)))).filter(Boolean);
+    snapshots.push({
+      coupleId: couple.id,
+      farmName: couple.farmName,
+      role: membership.role === "owner" ? "owner" : "member",
+      joinedAt: membership.joinedAt,
+      people: users.map((person) => publicUser(person)),
+    });
+  }
+  return snapshots;
+}
+
+async function villageHubData(user, relationship, membership, village) {
+  const members = await villageMemberSnapshots(village.id);
+  return response(200, {
+    village: publicVillage({ ...village, memberCount: members.length }),
+    membership: {
+      role: membership.role === "owner" ? "owner" : "member",
+      joinedAt: membership.joinedAt,
+    },
+    members,
+    viewerCoupleId: relationship.couple.id,
+    prompt: currentCommunityPrompt(),
+  });
+}
+
+async function villageHub(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const membership = await activeVillageMembership(relationship.couple);
+  if (!membership) {
+    return response(200, {
+      village: null,
+      membership: null,
+      members: [],
+      viewerCoupleId: relationship.couple.id,
+      prompt: currentCommunityPrompt(),
+      legacyCommunity: {
+        enabled: Boolean(relationship.couple.communityEnabled),
+        reason: "旧村口依赖公开名片和陌生用户规模，0.6 已改为邀请码熟人村庄。",
+      },
+    });
+  }
+  const village = await getDocument("villages", membership.villageId);
+  if (!village || village.status !== "active") {
+    await updateDocument("village_members", membership.id, { status: "inactive", updatedAt: Date.now() });
+    await updateDocument("couples", relationship.couple.id, { villageId: null, updatedAt: Date.now() });
+    return response(200, {
+      village: null,
+      membership: null,
+      members: [],
+      viewerCoupleId: relationship.couple.id,
+      prompt: currentCommunityPrompt(),
+    });
+  }
+  return villageHubData(user, relationship, membership, village);
+}
+
+async function generateVillageInvite(villageId, createdBy) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = randomInviteCode();
+    if (await getDocument("village_invites", code)) continue;
+    const now = Date.now();
+    const expiresAt = now + 30 * DAY;
+    await setDocument("village_invites", code, {
+      code,
+      villageId,
+      status: "active",
+      useCount: 0,
+      createdBy,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt,
+    });
+    return { code, expiresAt };
+  }
+  return null;
+}
+
+async function createVillage(user, payload, requestContext) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (await activeVillageMembership(relationship.couple)) {
+    return jsonError("你们已经在一个村庄里了。", 409, "VILLAGE_ALREADY_JOINED");
+  }
+  const name = cleanCommunityText(payload.name, 16);
+  const description = cleanCommunityText(payload.description, 80);
+  if (name.length < 2) return jsonError("村庄名称至少需要两个字。", 400, "VILLAGE_NAME_INVALID");
+  const safetyError = await checkTextSafety(`${name} ${description}`.trim(), requestContext);
+  if (safetyError) return safetyError;
+  const now = Date.now();
+  const villageId = `village_${randomId(12)}`;
+  const invite = await generateVillageInvite(villageId, user.uid);
+  if (!invite) return jsonError("村庄邀请码生成失败，请稍后重试。", 500, "VILLAGE_INVITE_FAILED");
+  const village = await setDocument("villages", villageId, {
+    name,
+    description,
+    ownerCoupleId: relationship.couple.id,
+    inviteCode: invite.code,
+    inviteExpiresAt: invite.expiresAt,
+    memberCount: 1,
+    status: "active",
+    createdBy: user.uid,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const membership = await setDocument("village_members", villageMemberId(villageId, relationship.couple.id), {
+    villageId,
+    coupleId: relationship.couple.id,
+    role: "owner",
+    status: "active",
+    joinedBy: user.uid,
+    joinedAt: now,
+    updatedAt: now,
+  });
+  await updateDocument("couples", relationship.couple.id, { villageId, updatedAt: now, updatedBy: user.uid });
+  return villageHubData(user, relationship, membership, village);
+}
+
+async function joinVillage(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  if (await activeVillageMembership(relationship.couple)) {
+    return jsonError("你们已经在一个村庄里了。", 409, "VILLAGE_ALREADY_JOINED");
+  }
+  const code = cleanText(payload.code, 8).toUpperCase();
+  if (code.length !== 8) return jsonError("请输入完整的 8 位村庄邀请码。", 400, "VILLAGE_INVITE_INVALID");
+  const invite = await getDocument("village_invites", code);
+  if (!invite || invite.status !== "active") return jsonError("这个村庄邀请码不存在或已失效。", 404, "VILLAGE_INVITE_NOT_FOUND");
+  if (invite.expiresAt < Date.now()) {
+    await updateDocument("village_invites", code, { status: "expired", updatedAt: Date.now() });
+    return jsonError("这个村庄邀请码已经过期，请让村长重新生成。", 410, "VILLAGE_INVITE_EXPIRED");
+  }
+  const village = await getDocument("villages", invite.villageId);
+  if (!village || village.status !== "active") return jsonError("这个村庄已经结束。", 410, "VILLAGE_INACTIVE");
+  const members = await villageMemberSnapshots(village.id);
+  if (members.length >= VILLAGE_MEMBER_LIMIT) {
+    return jsonError(`一个村庄最多容纳 ${VILLAGE_MEMBER_LIMIT} 对情侣。`, 409, "VILLAGE_FULL");
+  }
+  const now = Date.now();
+  const membership = await setDocument("village_members", villageMemberId(village.id, relationship.couple.id), {
+    villageId: village.id,
+    coupleId: relationship.couple.id,
+    role: "member",
+    status: "active",
+    joinedBy: user.uid,
+    joinedAt: now,
+    updatedAt: now,
+  });
+  const updatedVillage = await updateDocument("villages", village.id, {
+    memberCount: members.length + 1,
+    updatedAt: now,
+  });
+  await Promise.all([
+    updateDocument("couples", relationship.couple.id, { villageId: village.id, updatedAt: now, updatedBy: user.uid }),
+    updateDocument("village_invites", code, { useCount: Number(invite.useCount || 0) + 1, updatedAt: now }),
+  ]);
+  return villageHubData(user, relationship, membership, updatedVillage);
+}
+
+async function updateVillage(user, payload, requestContext) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  if (context.membership.role !== "owner") return jsonError("只有村长可以修改村庄资料。", 403, "VILLAGE_OWNER_REQUIRED");
+  const name = cleanCommunityText(payload.name, 16);
+  const description = cleanCommunityText(payload.description, 80);
+  if (name.length < 2) return jsonError("村庄名称至少需要两个字。", 400, "VILLAGE_NAME_INVALID");
+  const safetyError = await checkTextSafety(`${name} ${description}`.trim(), requestContext);
+  if (safetyError) return safetyError;
+  const village = await updateDocument("villages", context.village.id, {
+    name,
+    description,
+    updatedAt: Date.now(),
+    updatedBy: user.uid,
+  });
+  return villageHubData(user, context, context.membership, village);
+}
+
+async function regenerateVillageInvite(user) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  if (context.membership.role !== "owner") return jsonError("只有村长可以更换邀请码。", 403, "VILLAGE_OWNER_REQUIRED");
+  if (context.village.inviteCode) {
+    const oldInvite = await getDocument("village_invites", context.village.inviteCode);
+    if (oldInvite) await updateDocument("village_invites", oldInvite.id, { status: "replaced", updatedAt: Date.now() });
+  }
+  const invite = await generateVillageInvite(context.village.id, user.uid);
+  if (!invite) return jsonError("邀请码生成失败，请稍后重试。", 500, "VILLAGE_INVITE_FAILED");
+  const village = await updateDocument("villages", context.village.id, {
+    inviteCode: invite.code,
+    inviteExpiresAt: invite.expiresAt,
+    updatedAt: Date.now(),
+    updatedBy: user.uid,
+  });
+  return villageHubData(user, context, context.membership, village);
+}
+
+async function detachCoupleFromVillage(couple, userUid) {
+  const membership = await activeVillageMembership(couple);
+  if (!membership) return { ok: true };
+  const village = await getDocument("villages", membership.villageId);
+  if (!village || village.status !== "active") {
+    await updateDocument("village_members", membership.id, { status: "inactive", updatedAt: Date.now() });
+    await updateDocument("couples", couple.id, { villageId: null, updatedAt: Date.now() });
+    return { ok: true };
+  }
+  const memberships = await queryAll("village_members", { villageId: village.id }, [], VILLAGE_MEMBER_LIMIT + 10);
+  const others = memberships
+    .filter((item) => item.status === "active" && item.coupleId !== couple.id)
+    .sort((left, right) => left.joinedAt - right.joinedAt);
+  const now = Date.now();
+  await updateDocument("village_members", membership.id, {
+    status: "left",
+    leftAt: now,
+    leftBy: userUid,
+    updatedAt: now,
+  });
+  await updateDocument("couples", couple.id, { villageId: null, updatedAt: now, updatedBy: userUid });
+  if (!others.length) {
+    await updateDocument("villages", village.id, { status: "archived", memberCount: 0, updatedAt: now });
+    if (village.inviteCode) {
+      const invite = await getDocument("village_invites", village.inviteCode);
+      if (invite) await updateDocument("village_invites", invite.id, { status: "archived", updatedAt: now });
+    }
+    return { ok: true, archived: true };
+  }
+  const fields = { memberCount: others.length, updatedAt: now };
+  if (village.ownerCoupleId === couple.id) {
+    fields.ownerCoupleId = others[0].coupleId;
+    await updateDocument("village_members", others[0].id, { role: "owner", updatedAt: now });
+  }
+  await updateDocument("villages", village.id, fields);
+  return { ok: true, archived: false };
+}
+
+async function leaveVillage(user) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  await detachCoupleFromVillage(context.couple, user.uid);
+  return response(200, { ok: true });
+}
+
+async function dissolveVillage(user) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  if (context.membership.role !== "owner") return jsonError("只有村长可以解散村庄。", 403, "VILLAGE_OWNER_REQUIRED");
+  const memberships = await queryAll("village_members", { villageId: context.village.id }, [], VILLAGE_MEMBER_LIMIT + 10);
+  const now = Date.now();
+  for (const membership of memberships.filter((item) => item.status === "active")) {
+    await updateDocument("village_members", membership.id, {
+      status: "dissolved",
+      leftAt: now,
+      leftBy: user.uid,
+      updatedAt: now,
+    });
+    const memberCouple = await getDocument("couples", membership.coupleId);
+    if (memberCouple?.villageId === context.village.id) {
+      await updateDocument("couples", memberCouple.id, { villageId: null, updatedAt: now, updatedBy: user.uid });
+    }
+  }
+  await updateDocument("villages", context.village.id, {
+    status: "dissolved",
+    memberCount: 0,
+    dissolvedAt: now,
+    dissolvedBy: user.uid,
+    updatedAt: now,
+  });
+  if (context.village.inviteCode) {
+    const invite = await getDocument("village_invites", context.village.inviteCode);
+    if (invite) await updateDocument("village_invites", invite.id, { status: "dissolved", updatedAt: now });
+  }
+  return response(200, { ok: true });
+}
+
+async function villageFeed(user) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  const warnings = [];
+  const [memberships, posts, comments, reactions] = await Promise.all([
+    bestEffortQuery("village_members", { villageId: context.village.id }, [], VILLAGE_MEMBER_LIMIT + 10, warnings, "members"),
+    bestEffortQuery("community_posts", { villageId: context.village.id }, [], 160, warnings, "posts"),
+    bestEffortQuery("community_comments", { villageId: context.village.id }, [], 320, warnings, "comments"),
+    bestEffortQuery("community_reactions", { villageId: context.village.id }, [], 500, warnings, "reactions"),
+  ]);
+  const activeCoupleIds = new Set(memberships.filter((item) => item.status === "active").map((item) => item.coupleId));
+  activeCoupleIds.add(context.couple.id);
+  const likedPostIds = new Set(reactions
+    .filter((item) => item.fromCoupleId === context.couple.id && item.active !== false)
+    .map((item) => item.postId));
+  const visiblePosts = posts
+    .filter((post) => post.status === "published" && activeCoupleIds.has(post.authorCoupleId))
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 60);
+  const visiblePostIds = new Set(visiblePosts.map((post) => post.id));
+  const commentsByPost = new Map();
+  for (const comment of comments
+    .filter((item) => item.status === "published" && visiblePostIds.has(item.postId))
+    .filter((item) => activeCoupleIds.has(item.authorCoupleId))
+    .sort((left, right) => left.createdAt - right.createdAt)) {
+    const list = commentsByPost.get(comment.postId) || [];
+    list.push(comment);
+    commentsByPost.set(comment.postId, list.slice(-12));
+  }
+  return response(200, {
+    village: publicVillage(context.village),
+    prompt: currentCommunityPrompt(),
+    posts: visiblePosts.map((post) => ({
+      ...post,
+      likedByViewer: likedPostIds.has(post.id),
+      ownCouple: post.authorCoupleId === context.couple.id,
+      comments: commentsByPost.get(post.id) || [],
+    })),
+    serviceState: warnings.length ? "degraded" : "healthy",
+    warningCount: warnings.length,
+  });
+}
+
+async function createVillagePost(user, payload, requestContext) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  if (await communityRateLimited("community_posts", user.uid, 15 * 60 * 1000, 5)) {
+    return jsonError("发得有点快啦，歇一会儿再来村里聊。", 429, "POST_RATE_LIMITED");
+  }
+  const content = cleanCommunityText(payload.content, 300);
+  if (content.length < 2) return jsonError("动态至少写两个字。", 400, "POST_CONTENT_INVALID");
+  const topic = communityTopics.includes(payload.topic) ? payload.topic : "daily";
+  const safetyError = await checkTextSafety(content, requestContext);
+  if (safetyError) return safetyError;
+  const imageFileId = normalizeAvatarFileId(payload.imageFileId, user.uid, "community");
+  if (imageFileId === undefined) return jsonError("动态图片地址不正确，请重新选择。", 400, "POST_IMAGE_INVALID");
+  if (imageFileId) {
+    const imageError = await checkImageSafety(imageFileId, requestContext);
+    if (imageError) {
+      if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(imageFileId);
+      return imageError;
+    }
+  }
+  const now = Date.now();
+  const post = await addDocument("community_posts", {
+    ...communityAuthorSnapshot(user, context.couple),
+    villageId: context.village.id,
+    content,
+    topic,
+    promptId: cleanText(payload.promptId, 64) || null,
+    imageFileId,
+    shareStat: null,
+    likeCount: 0,
+    commentCount: 0,
+    reportCount: 0,
+    status: "published",
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { post });
+}
+
+async function toggleVillageLike(user, payload) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  const postId = cleanText(payload.postId, 128);
+  const post = postId ? await getDocument("community_posts", postId) : null;
+  if (!post || post.status !== "published" || post.villageId !== context.village.id) {
+    return jsonError("这条动态已经不在村里了。", 404, "POST_NOT_FOUND");
+  }
+  const id = `village_like_${sha256(`${context.village.id}:${context.couple.id}:${postId}`).slice(0, 48)}`;
+  const current = await getDocument("community_reactions", id);
+  const active = !(current && current.active !== false);
+  await setDocument("community_reactions", id, {
+    villageId: context.village.id,
+    postId,
+    fromCoupleId: context.couple.id,
+    active,
+    createdAt: current?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  });
+  const likes = await queryAll("community_reactions", { postId }, [], 2000);
+  const likeCount = likes.filter((item) => item.active !== false).length;
+  await updateDocument("community_posts", postId, { likeCount, updatedAt: Date.now() });
+  return response(200, { active, likeCount });
+}
+
+async function addVillageComment(user, payload, requestContext) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  if (await communityRateLimited("community_comments", user.uid, 10 * 60 * 1000, 12)) {
+    return jsonError("留言有点快啦，稍等一会儿。", 429, "COMMENT_RATE_LIMITED");
+  }
+  const postId = cleanText(payload.postId, 128);
+  const post = postId ? await getDocument("community_posts", postId) : null;
+  if (!post || post.status !== "published" || post.villageId !== context.village.id) {
+    return jsonError("这条动态已经不在村里了。", 404, "POST_NOT_FOUND");
+  }
+  const content = cleanCommunityText(payload.content, 120);
+  if (!content) return jsonError("写点内容再留言吧。", 400, "COMMENT_CONTENT_INVALID");
+  const safetyError = await checkTextSafety(content, requestContext);
+  if (safetyError) return safetyError;
+  const now = Date.now();
+  const comment = await addDocument("community_comments", {
+    ...communityAuthorSnapshot(user, context.couple),
+    villageId: context.village.id,
+    postId,
+    content,
+    status: "published",
+    reportCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const comments = await queryAll("community_comments", { postId }, [], 2000);
+  const commentCount = comments.filter((item) => item.status === "published").length;
+  await updateDocument("community_posts", postId, { commentCount, updatedAt: now });
+  return response(201, { comment, commentCount });
+}
+
+async function deleteVillageContent(user, payload) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  const type = payload.type === "comment" ? "comment" : "post";
+  const collectionName = type === "post" ? "community_posts" : "community_comments";
+  const id = cleanText(payload.id, 128);
+  const item = id ? await getDocument(collectionName, id) : null;
+  if (!item || item.villageId !== context.village.id) return jsonError("没有找到这条村庄内容。", 404, "VILLAGE_CONTENT_NOT_FOUND");
+  const canDelete = type === "post"
+    ? item.authorCoupleId === context.couple.id
+    : item.authorUid === user.uid || item.authorCoupleId === context.couple.id;
+  if (!canDelete) return jsonError("只能删除自己发布的内容。", 403, "VILLAGE_CONTENT_FORBIDDEN");
+  await updateDocument(collectionName, id, { status: "deleted", deletedAt: Date.now(), deletedBy: user.uid });
+  if (type === "post" && item.imageFileId) await removeUploadedFile(item.imageFileId);
+  if (type === "comment") {
+    const comments = await queryAll("community_comments", { postId: item.postId }, [], 2000);
+    await updateDocument("community_posts", item.postId, {
+      commentCount: comments.filter((comment) => comment.status === "published").length,
+      updatedAt: Date.now(),
+    });
+  }
+  return response(200, { ok: true });
+}
+
+async function reportVillageContent(user, payload) {
+  const context = await requireVillage(user);
+  if (context.error) return context.error;
+  const type = payload.type === "comment" ? "comment" : "post";
+  const collectionName = type === "post" ? "community_posts" : "community_comments";
+  const id = cleanText(payload.id, 128);
+  const item = id ? await getDocument(collectionName, id) : null;
+  if (!item || item.villageId !== context.village.id || item.status !== "published") {
+    return jsonError("这条内容已经不存在。", 404, "VILLAGE_CONTENT_NOT_FOUND");
+  }
+  if (item.authorCoupleId === context.couple.id) return jsonError("不能举报自己发布的内容。", 400, "REPORT_SELF");
+  const reasons = ["spam", "abuse", "privacy", "unsafe", "other"];
+  const reason = reasons.includes(payload.reason) ? payload.reason : "other";
+  const reportId = `village_report_${sha256(`${context.village.id}:${context.couple.id}:${type}:${id}`).slice(0, 44)}`;
+  if (await getDocument("community_reports", reportId)) return jsonError("这条内容已经举报过了。", 409, "ALREADY_REPORTED");
+  await setDocument("community_reports", reportId, {
+    villageId: context.village.id,
+    fromCoupleId: context.couple.id,
+    targetCoupleId: item.authorCoupleId,
+    targetType: type,
+    targetId: id,
+    reason,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+  const reportCount = Number(item.reportCount || 0) + 1;
+  await updateDocument(collectionName, id, {
+    reportCount,
+    status: reportCount >= 3 ? "review" : "published",
+    updatedAt: Date.now(),
+  });
+  return response(201, { ok: true });
+}
+
 async function handleAction(user, action, payload, requestContext) {
   switch (action) {
     case "bootstrap": return bootstrap(user);
@@ -2170,6 +2905,19 @@ async function handleAction(user, action, payload, requestContext) {
     case "answer-daily-question": return answerDailyQuestion(user, payload);
     case "claim-founder-trial": return claimFounderTrial(user);
     case "join-membership-waitlist": return joinMembershipWaitlist(user, payload);
+    case "village-hub": return villageHub(user);
+    case "create-village": return createVillage(user, payload, requestContext);
+    case "join-village": return joinVillage(user, payload);
+    case "update-village": return updateVillage(user, payload, requestContext);
+    case "regenerate-village-invite": return regenerateVillageInvite(user);
+    case "leave-village": return leaveVillage(user);
+    case "dissolve-village": return dissolveVillage(user);
+    case "village-feed": return villageFeed(user);
+    case "create-village-post": return createVillagePost(user, payload, requestContext);
+    case "toggle-village-like": return toggleVillageLike(user, payload);
+    case "add-village-comment": return addVillageComment(user, payload, requestContext);
+    case "delete-village-content": return deleteVillageContent(user, payload);
+    case "report-village-content": return reportVillageContent(user, payload);
     case "community-feed": return communityFeed(user, payload);
     case "update-community-settings": return updateCommunitySettings(user, payload, requestContext);
     case "create-community-post": return createCommunityPost(user, payload, requestContext);
@@ -2185,11 +2933,22 @@ async function handleAction(user, action, payload, requestContext) {
 
 exports.main = async function main(event = {}, context = {}) {
   const action = cleanText(event.action || (event.payload && event.payload.action), 48).toLowerCase();
+  const timerTriggered = event.Type === "Timer" || event.type === "timer" || event.triggerName === "couple-reminders";
+  if (timerTriggered) {
+    try {
+      await ensureCollections();
+      const result = await maybeDispatchDueReminders("timer", true);
+      return response(200, result);
+    } catch (error) {
+      console.error("scheduled reminder sweep failed", errorDetails(error));
+      return response(500, { ok: false, code: "REMINDER_SWEEP_FAILED" });
+    }
+  }
   if (action === "health") {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.5.0",
+      version: "0.6.0",
       serverTime: Date.now(),
     });
   }
@@ -2205,7 +2964,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.5.0",
+        version: "0.6.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -2214,6 +2973,31 @@ exports.main = async function main(event = {}, context = {}) {
       return response(500, {
         error: "村口云端尚未准备好。",
         code: "COMMUNITY_HEALTH_FAILED",
+        diagnosticId,
+      });
+    }
+  }
+
+  if (action === "village-health") {
+    try {
+      await ensureCollections();
+      await Promise.all([
+        queryAll("villages", {}, [], 1),
+        queryAll("village_members", {}, [], 1),
+        queryAll("village_invites", {}, [], 1),
+      ]);
+      return response(200, {
+        ok: true,
+        service: "village",
+        version: "0.6.0",
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+      console.error("village health check failed", { diagnosticId, ...errorDetails(error) });
+      return response(500, {
+        error: "熟人村庄云端尚未准备好。",
+        code: "VILLAGE_HEALTH_FAILED",
         diagnosticId,
       });
     }
@@ -2247,6 +3031,13 @@ exports.main = async function main(event = {}, context = {}) {
     }
 
     const user = await getOrCreateUser(identity);
+    if (action === "bootstrap" && event.channel === "mini") {
+      try {
+        await maybeDispatchDueReminders("mini-bootstrap");
+      } catch (error) {
+        console.warn("opportunistic reminder sweep skipped", errorDetails(error));
+      }
+    }
     return await handleAction(user, action, payload, {
       channel: event.channel,
       platformCaller,

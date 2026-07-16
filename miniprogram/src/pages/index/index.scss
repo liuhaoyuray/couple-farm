@@ -86,6 +86,12 @@ button::after { border: 0; }
 .farm-ground { position: absolute; right: 18rpx; bottom: 12rpx; left: 18rpx; display: flex; align-items: flex-end; justify-content: space-around; font-size: 60rpx; }
 .farm-ground text:nth-child(2) { font-size: 96rpx; }
 .farm-ground text:nth-child(3), .farm-ground text:nth-child(4) { font-size: 52rpx; }
+.solo-hero { min-height: 340rpx; }
+.solo-hero > view:first-child { position: relative; z-index: 2; max-width: 480rpx; }
+.solo-hero .description { margin-top: 14rpx; color: #433c5e; }
+.solo-pair-banner > view { flex: 1; min-width: 0; }
+.solo-pair-banner > text:last-child { flex: 0 0 auto; }
+.solo-person-grid { grid-template-columns: 1fr; }
 
 .setup-banner { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; margin-top: 24rpx; padding: 20rpx 22rpx; border: 4rpx dashed $pink; border-radius: 22rpx; background: #fff0f5; color: #8c284a; font-size: 24rpx; font-weight: 800; }
 .setup-banner text:first-child { flex: 1; }
@@ -242,6 +248,24 @@ button::after { border: 0; }
 .comment-box input { min-height: 66rpx; padding: 0 16rpx; border: 3rpx solid $line; border-radius: 16rpx; background: #fff; font-size: 22rpx; }
 .comment-box button { min-height: 66rpx; margin: 0; padding: 0; border-radius: 16rpx; background: $violet; color: #fff; font-size: 21rpx; font-weight: 900; line-height: 62rpx; }
 
+.village-create-card { border-color: #b9d69f; background: linear-gradient(180deg, #fff, #f5fff0); }
+.village-privacy-note { margin-top: 22rpx; padding: 20rpx; border: 3rpx dashed #9d91b2; border-radius: 18rpx; background: rgba(255,255,255,.58); color: $muted; font-size: 21rpx; font-weight: 750; line-height: 1.6; }
+.village-hero { margin-top: 6rpx; padding: 28rpx; border: 5rpx solid $shadow; border-radius: 30rpx; background: linear-gradient(145deg, #dff3bd, #fff4c7); box-shadow: 0 8rpx 0 $shadow; }
+.village-hero .farm-title { max-width: none; }
+.village-hero .description { margin-top: 10rpx; }
+.village-invite-row { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-top: 22rpx; padding: 17rpx 18rpx; border: 3rpx dashed #806b2b; border-radius: 18rpx; background: rgba(255,255,255,.72); }
+.village-invite-row > view { flex: 1; }
+.village-invite-code { display: block; margin-top: 3rpx; color: $violet-dark; font-family: monospace; font-size: 34rpx; font-weight: 900; letter-spacing: 5rpx; }
+.village-invite-row button { flex: 0 0 auto; min-height: 59rpx; margin: 0; padding: 0 18rpx; border-radius: 14rpx; background: $violet; color: #fff; font-size: 20rpx; font-weight: 900; line-height: 55rpx; }
+.village-members-card { border-color: #c7dcae; }
+.village-member { display: flex; align-items: center; gap: 14rpx; padding: 17rpx 0; border-top: 2rpx dashed $line; }
+.village-member:first-child { border-top: 0; }
+.village-member > view:last-child { flex: 1; min-width: 0; }
+.village-avatar-stack { display: flex; flex: 0 0 auto; min-width: 82rpx; }
+.village-avatar-stack .community-avatar + .community-avatar { margin-left: -18rpx; }
+.village-owner-card { border-color: #dfca76; background: #fffced; }
+.village-exit-card { border-color: #e9bdcc; background: #fffafb; }
+
 .together-heading { padding-top: 8rpx; }
 .together-loading { padding: 100rpx 24rpx; color: $muted; font-size: 27rpx; font-weight: 900; text-align: center; }
 .together-error { border-color: #ef8ba6; background: #fff9fb; }
@@ -340,6 +364,7 @@ button::after { border: 0; }
 .memo-category.date { background: #fff0f5; color: #972a4e; }
 .memo-category.important { background: #ffe7e7; color: #9e2424; }
 .memo-note { display: block; margin: 9rpx 0; color: #51475f; font-size: 23rpx; line-height: 1.55; white-space: pre-wrap; }
+.memo-location { display: block; margin: 7rpx 0; color: #17663d; font-size: 21rpx; font-weight: 800; }
 .memo-waiting { display: block; margin-top: 9rpx; color: #17663d; font-size: 20rpx; font-weight: 850; }
 .memo-actions { display: flex; flex-wrap: wrap; gap: 8rpx; margin-top: 14rpx; }
 .memo-actions button { min-height: 53rpx; margin: 0; padding: 0 13rpx; border-radius: 13rpx; background: #efeaff; color: $violet-dark; font-size: 19rpx; font-weight: 850; line-height: 49rpx; }
@@ -359,7 +384,8 @@ button::after { border: 0; }
 .outline-danger, .danger-solid { min-height: 76rpx; margin-top: 15rpx; border: 3rpx solid #c34267; border-radius: 17rpx; background: transparent; color: #a62d52; font-size: 24rpx; font-weight: 800; line-height: 70rpx; }
 .danger-solid { background: #b52e56; color: #fff; }
 
-.tab-bar { position: fixed; right: 20rpx; bottom: calc(18rpx + env(safe-area-inset-bottom)); left: 20rpx; z-index: 20; display: grid; grid-template-columns: repeat(5, 1fr); padding: 9rpx; border: 4rpx solid $shadow; border-radius: 27rpx; background: rgba(255,254,249,.97); box-shadow: 0 8rpx 0 $shadow, 0 -4rpx 24rpx rgba(58,44,89,.12); }
+.tab-bar { position: fixed; right: 20rpx; bottom: calc(18rpx + env(safe-area-inset-bottom)); left: 20rpx; z-index: 20; display: grid; grid-template-columns: repeat(6, 1fr); padding: 9rpx; border: 4rpx solid $shadow; border-radius: 27rpx; background: rgba(255,254,249,.97); box-shadow: 0 8rpx 0 $shadow, 0 -4rpx 24rpx rgba(58,44,89,.12); }
+.solo-tab-bar { grid-template-columns: repeat(4, 1fr); }
 .tab-item { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 86rpx; margin: 0; padding: 5rpx 0; border-radius: 18rpx; background: transparent; color: $muted; font-size: 20rpx; font-weight: 800; line-height: 1.25; }
 .tab-item text:first-child { font-size: 31rpx; }
 .tab-item.active { background: #e9e2ff; color: $violet-dark; box-shadow: inset 0 0 0 3rpx #c8b9ff; }

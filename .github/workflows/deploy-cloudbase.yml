@@ -77,6 +77,8 @@ jobs:
           printf '%s\n' "$result" | node scripts/verify-cloudbase-health.cjs couple-tracker
           community_result="$(tcb fn invoke couple-tracker --data '{"action":"community-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
           printf '%s\n' "$community_result" | node scripts/verify-cloudbase-health.cjs community
+          village_result="$(tcb fn invoke couple-tracker --data '{"action":"village-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
+          printf '%s\n' "$village_result" | node scripts/verify-cloudbase-health.cjs village
 
       - name: 发布静态网站
         run: tcb hosting deploy cloudbase/dist / --env-id "$TCB_ENV_ID" --retry-count 5 --retry-interval 2000 --json --yes
