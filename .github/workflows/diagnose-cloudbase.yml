@@ -47,11 +47,19 @@ jobs:
           DIAGNOSTIC_ENCRYPTION_KEY: ${{ secrets.DIAGNOSTIC_ENCRYPTION_KEY }}
         run: |
           test -n "$DIAGNOSTIC_ENCRYPTION_KEY" || { echo "缺少诊断加密密钥"; exit 1; }
-          tcb fn log couple-tracker --env-id "$TCB_ENV_ID" --limit 1000 --order desc --json \
+          query="function_name:\"couple-tracker\" AND log:\"$DIAGNOSTIC_ID\""
+          tcb logs search --env-id "$TCB_ENV_ID" --query "$query" --timeRange 30d --limit 100 --sort asc --json \
             > "$RUNNER_TEMP/cloudbase-raw.json"
-          node scripts/filter-cloudbase-diagnostic.cjs "$DIAGNOSTIC_ID" \
+          if ! node scripts/filter-cloudbase-diagnostic.cjs "$DIAGNOSTIC_ID" \
             < "$RUNNER_TEMP/cloudbase-raw.json" \
-            > "$RUNNER_TEMP/cloudbase-diagnostic.json"
+            > "$RUNNER_TEMP/cloudbase-diagnostic.json"; then
+            query="function_name:\"couple-tracker\" AND src:\"app\""
+            tcb logs search --env-id "$TCB_ENV_ID" --query "$query" --timeRange 30d --limit 100 --sort desc --json \
+              > "$RUNNER_TEMP/cloudbase-raw.json"
+            node scripts/filter-cloudbase-diagnostic.cjs "$DIAGNOSTIC_ID" \
+              < "$RUNNER_TEMP/cloudbase-raw.json" \
+              > "$RUNNER_TEMP/cloudbase-diagnostic.json"
+          fi
           openssl enc -aes-256-cbc -pbkdf2 -salt \
             -in "$RUNNER_TEMP/cloudbase-diagnostic.json" \
             -out "$RUNNER_TEMP/cloudbase-diagnostic.enc" \
