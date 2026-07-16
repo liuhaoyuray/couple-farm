@@ -75,6 +75,8 @@ jobs:
         run: |
           result="$(tcb fn invoke couple-tracker --data '{"action":"health"}' --env-id "$TCB_ENV_ID" --json --yes)"
           printf '%s\n' "$result" | grep -q 'couple-tracker'
+          community_result="$(tcb fn invoke couple-tracker --data '{"action":"community-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
+          printf '%s\n' "$community_result" | grep -q '"service":"community"'
 
       - name: 发布静态网站
         run: tcb hosting deploy cloudbase/dist / --env-id "$TCB_ENV_ID" --retry-count 5 --retry-interval 2000 --json --yes

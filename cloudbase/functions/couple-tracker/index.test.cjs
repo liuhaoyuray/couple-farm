@@ -18,6 +18,7 @@ function createFakeCloudbase() {
     const state = { condition: {}, orders: [], skip: 0, limit: 100 };
     const api = {
       where(condition) {
+        if (!condition || Object.keys(condition).length === 0) throw new Error("EMPTY_WHERE_UNSUPPORTED");
         state.condition = condition;
         return api;
       },
@@ -156,7 +157,15 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.3.0");
+  assert.equal(result.data.version, "0.3.1");
+});
+
+test("verifies the community schema without a user session", async () => {
+  const result = await invoke(null, "community-health");
+  assert.equal(result.status, 200);
+  assert.equal(result.data.ok, true);
+  assert.equal(result.data.service, "community");
+  assert.equal(result.data.version, "0.3.1");
 });
 
 test("requires a CloudBase platform identity", async () => {

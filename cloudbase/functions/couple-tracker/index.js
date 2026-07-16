@@ -343,21 +343,34 @@ function isMissingCollection(error) {
   return /collection.*not.*exist|DATABASE_COLLECTION_NOT_EXIST|-502005/i.test(message);
 }
 
+function isExistingCollection(error) {
+  const message = error instanceof Error ? error.message : JSON.stringify(error);
+  return /collection.*already.*exist|DATABASE_COLLECTION_EXIST|-502002/i.test(message);
+}
+
 async function ensureCollection(name) {
   try {
     await db.collection(name).limit(1).get();
   } catch (error) {
     if (!isMissingCollection(error)) throw error;
     if (typeof db.createCollection !== "function") throw error;
-    await db.createCollection(name);
+    try {
+      await db.createCollection(name);
+    } catch (createError) {
+      if (!isExistingCollection(createError)) throw createError;
+    }
   }
 }
 
 let schemaReady;
 
+async function prepareCollections() {
+  for (const name of COLLECTIONS) await ensureCollection(name);
+}
+
 function ensureCollections() {
   if (!schemaReady) {
-    schemaReady = Promise.all(COLLECTIONS.map(ensureCollection)).catch((error) => {
+    schemaReady = prepareCollections().catch((error) => {
       schemaReady = undefined;
       throw error;
     });
@@ -400,7 +413,8 @@ async function addDocument(name, fields) {
 async function queryAll(name, condition, orders, maximum = 500) {
   const documents = [];
   while (documents.length < maximum) {
-    let query = db.collection(name).where(condition);
+    let query = db.collection(name);
+    if (condition && Object.keys(condition).length > 0) query = query.where(condition);
     for (const [field, direction] of orders) query = query.orderBy(field, direction);
     const pageSize = Math.min(100, maximum - documents.length);
     const result = await query.skip(documents.length).limit(pageSize).get();
@@ -1119,6 +1133,12 @@ async function refreshCommunityStats(couple) {
   return updated;
 }
 
+async function maybeRefreshCommunityStats(couple, force = false) {
+  const updatedAt = Number(couple.communityStats && couple.communityStats.updatedAt) || 0;
+  if (!force && updatedAt > Date.now() - 10 * 60 * 1000) return couple;
+  return refreshCommunityStats(couple);
+}
+
 async function updateCommunitySettings(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
@@ -1136,7 +1156,7 @@ async function updateCommunitySettings(user, payload, requestContext) {
     updatedBy: user.uid,
     updatedAt: Date.now(),
   });
-  const withStats = enabled ? await refreshCommunityStats(updated) : updated;
+  const withStats = enabled ? await maybeRefreshCommunityStats(updated, true) : updated;
   return response(200, {
     settings: normalizeCommunitySettings(withStats),
     stats: publicCommunityStats(withStats),
@@ -1155,15 +1175,15 @@ async function communityFeed(user, payload) {
   const mode = payload.mode === "following" ? "following" : "all";
   let viewerCouple = relationship.couple;
   if (normalizeCommunitySettings(viewerCouple).enabled) {
-    viewerCouple = await refreshCommunityStats(viewerCouple);
+    viewerCouple = await maybeRefreshCommunityStats(viewerCouple);
   }
   const [couples, posts, comments, viewerLikes, follows, blocks] = await Promise.all([
     queryAll("couples", {}, [], 200),
-    queryAll("community_posts", {}, [], 400),
-    queryAll("community_comments", {}, [], 800),
-    queryAll("community_reactions", { fromCoupleId: viewerCouple.id }, [], 500),
-    queryAll("community_follows", { fromCoupleId: viewerCouple.id }, [], 500),
-    queryAll("community_blocks", { fromCoupleId: viewerCouple.id }, [], 500),
+    queryAll("community_posts", {}, [["createdAt", "desc"]], 120),
+    queryAll("community_comments", {}, [["createdAt", "desc"]], 240),
+    queryAll("community_reactions", { fromCoupleId: viewerCouple.id }, [], 200),
+    queryAll("community_follows", { fromCoupleId: viewerCouple.id }, [], 200),
+    queryAll("community_blocks", { fromCoupleId: viewerCouple.id }, [], 200),
   ]);
   const enabledCouples = new Map(couples
     .filter((couple) => couple.status === "active" && couple.communityEnabled)
@@ -1241,7 +1261,7 @@ async function createCommunityPost(user, payload, requestContext) {
       return imageError;
     }
   }
-  const updatedCouple = await refreshCommunityStats(relationship.couple);
+  const updatedCouple = await maybeRefreshCommunityStats(relationship.couple, true);
   const settings = normalizeCommunitySettings(updatedCouple);
   const shareStatKey = settings.publicStats.includes(payload.shareStatKey) ? payload.shareStatKey : null;
   const shareStat = shareStatKey
@@ -1482,15 +1502,40 @@ async function handleAction(user, action, payload, requestContext) {
   }
 }
 
-exports.main = async function main(event = {}) {
+exports.main = async function main(event = {}, context = {}) {
   const action = cleanText(event.action || (event.payload && event.payload.action), 48).toLowerCase();
   if (action === "health") {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.3.0",
+      version: "0.3.1",
       serverTime: Date.now(),
     });
+  }
+
+  if (action === "community-health") {
+    try {
+      await ensureCollections();
+      await Promise.all([
+        queryAll("couples", {}, [], 1),
+        queryAll("community_posts", {}, [["createdAt", "desc"]], 1),
+        queryAll("community_comments", {}, [["createdAt", "desc"]], 1),
+      ]);
+      return response(200, {
+        ok: true,
+        service: "community",
+        version: "0.3.1",
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+      console.error("community health check failed", { diagnosticId, error });
+      return response(500, {
+        error: "村口云端尚未准备好。",
+        code: "COMMUNITY_HEALTH_FAILED",
+        diagnosticId,
+      });
+    }
   }
 
   const platformCaller = getPlatformCaller();
@@ -1526,11 +1571,17 @@ exports.main = async function main(event = {}) {
       platformCaller,
     });
   } catch (error) {
+    const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
     console.error("couple-tracker cloud function failed", {
       platformUid: platformCaller.uid,
       action,
+      diagnosticId,
       error,
     });
-    return jsonError("小农场暂时打了个盹，请稍后再刷新一次。", 500, "INTERNAL_ERROR");
+    return response(500, {
+      error: "小农场暂时打了个盹，请稍后再刷新一次。",
+      code: "INTERNAL_ERROR",
+      diagnosticId,
+    });
   }
 };

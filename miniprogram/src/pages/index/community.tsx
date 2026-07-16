@@ -143,7 +143,9 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
     setError(null);
     const result = await cloudCall("community-feed", { mode: nextMode });
     if (result.status !== 200) {
-      setError(typeof result.data.error === "string" ? result.data.error : "村口暂时没有打开。");
+      const message = typeof result.data.error === "string" ? result.data.error : "村口暂时没有打开。";
+      const code = String(result.data.diagnosticId || result.data.code || "COMMUNITY_LOAD_FAILED");
+      setError(`${message}（诊断码：${code}）`);
       setLoading(false);
       return;
     }
