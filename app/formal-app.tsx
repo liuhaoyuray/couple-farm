@@ -179,7 +179,7 @@ function FullPageMessage({ title, detail, action }: { title: string; detail: str
     <main className="formal-access">
       <section className="formal-access-card">
         <div className="formal-logo" aria-hidden="true">♥</div>
-        <p className="formal-kicker">情侣小农场</p>
+        <p className="formal-kicker">我们俩的小田地</p>
         <h1>{title}</h1>
         <p>{detail}</p>
         {action && <button className="formal-primary" onClick={action}>重新连接</button>}
@@ -357,7 +357,7 @@ export default function FormalApp() {
       return;
     }
     setData(result.data as unknown as FarmData);
-    showToast("绑定成功，欢迎来到你们的共同农场！");
+    showToast("绑定成功，欢迎来到你们的共同田地！");
   };
 
   const refreshDashboard = useCallback(async () => {
@@ -376,7 +376,7 @@ export default function FormalApp() {
     if (result.status !== 201) return setError(apiError(result));
     setWeight("");
     setWeightTime(toDateTimeInput());
-    showToast("体重已经种进小农场啦。");
+    showToast("体重已经种进小田地啦。");
     await refreshDashboard();
   };
 
@@ -434,7 +434,7 @@ export default function FormalApp() {
     ].sort((a, b) => b.time - a.time).slice(0, 12);
   }, [data]);
 
-  if (booting) return <FullPageMessage title="正在打开你们的小农场" detail="这次只检查登录状态，不会一直让你等。" />;
+  if (booting) return <FullPageMessage title="正在打开你们的小田地" detail="这次只检查登录状态，不会一直让你等。" />;
 
   if (!sessionToken) {
     return (
@@ -443,7 +443,7 @@ export default function FormalApp() {
           <div className="formal-auth-story">
             <div className="formal-logo" aria-hidden="true">♥</div>
             <p className="formal-kicker">双人生活养成</p>
-            <h1>把两个人的小事，<br />种成一座共同农场。</h1>
+            <h1>把两个人的小事，<br />种成一座共同田地。</h1>
             <p>体重曲线、粑粑动态、互相点赞和轻轻嘲讽。现在每个人都有自己的账号，不再依赖专属链接。</p>
             <div className="formal-story-badges"><span>🌱 免费起步</span><span>🔐 独立账号</span><span>💞 一次配对</span></div>
           </div>
@@ -459,7 +459,7 @@ export default function FormalApp() {
               {authMode === "recover" && <label>恢复码<input value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value.toUpperCase())} placeholder="XXXXXXXX-XXXXXXXX" autoComplete="off" required /></label>}
               <label>{authMode === "recover" ? "新密码" : "密码"}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === "login" ? "current-password" : "new-password"} placeholder="至少 8 位，包含字母和数字" minLength={8} maxLength={64} required /></label>
               {error && <p className="formal-error" role="alert">{error}</p>}
-              <button className="formal-primary" disabled={busy}>{busy ? "请稍等…" : authMode === "login" ? "进入我的农场" : authMode === "register" ? "注册并进入" : "重设密码并登录"}</button>
+              <button className="formal-primary" disabled={busy}>{busy ? "请稍等…" : authMode === "login" ? "进入我的田地" : authMode === "register" ? "注册并进入" : "重设密码并登录"}</button>
             </form>
             <button className="formal-text-button" onClick={() => { setAuthMode(authMode === "recover" ? "login" : "recover"); setError(null); }}>{authMode === "recover" ? "返回登录" : "忘记密码？用恢复码"}</button>
           </section>
@@ -484,7 +484,7 @@ export default function FormalApp() {
     );
   }
 
-  if (error && !data) return <FullPageMessage title="小农场暂时没连上" detail={error} action={() => sessionToken && void bootstrap(sessionToken)} />;
+  if (error && !data) return <FullPageMessage title="小田地暂时没连上" detail={error} action={() => sessionToken && void bootstrap(sessionToken)} />;
 
   if (!data) return <FullPageMessage title="正在整理田地" detail="请稍后刷新一次。" />;
 
@@ -493,7 +493,7 @@ export default function FormalApp() {
       <main className="formal-access">
         <section className="formal-access-card profile-card">
           <p className="formal-kicker">第一步 · 认识一下</p>
-          <h1>你想在农场里叫什么？</h1>
+          <h1>你想在田地里叫什么？</h1>
           <p>昵称可以是中文；头像以后也可以继续修改。</p>
           <form onSubmit={saveProfile} className="formal-form">
             <label>昵称<input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="例如 小麦苗、团子、阿星" maxLength={12} required /></label>
@@ -546,13 +546,13 @@ export default function FormalApp() {
   return (
     <main className="formal-dashboard">
       <header className="formal-topbar">
-        <div className="formal-brand"><span>♥</span><strong>情侣小农场</strong></div>
+        <div className="formal-brand"><span>♥</span><strong>我们俩的小田地</strong></div>
         <div className="formal-couple-chip"><span style={{ background: data.viewer.color }}>{data.viewer.avatar}</span><i>+</i><span style={{ background: data.partner.color }}>{data.partner.avatar}</span><b>{data.viewer.nickname} & {data.partner.nickname}</b></div>
         <div className="formal-top-actions"><button onClick={refreshDashboard} aria-label="刷新">↻</button><details><summary>设置</summary><div><button onClick={logout}>退出登录</button><button className="danger" onClick={unbind}>解除绑定</button></div></details></div>
       </header>
       <div className="formal-shell">
         <section className="formal-hero">
-          <div><p className="formal-kicker">共同农场 · 已安全同步</p><h1>今天，也一起认真生活。</h1><p>不用盯着数字焦虑，只看两个人真实、缓慢的变化。</p></div>
+          <div><p className="formal-kicker">共同田地 · 已安全同步</p><h1>今天，也一起认真生活。</h1><p>不用盯着数字焦虑，只看两个人真实、缓慢的变化。</p></div>
           <div className="formal-farm-scene" aria-hidden="true"><span>🌻</span><span>🏡</span><span>🌳</span></div>
         </section>
 

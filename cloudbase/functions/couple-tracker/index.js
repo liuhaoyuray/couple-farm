@@ -34,6 +34,8 @@ const COLLECTIONS = [
   "daily_checkins",
   "daily_answers",
   "membership_waitlist",
+  "shared_memos",
+  "notification_subscriptions",
 ];
 
 const avatarChoices = [
@@ -74,6 +76,10 @@ const togetherPrompts = [
 const moodLabels = ["有点低落", "需要抱抱", "普普通通", "心情不错", "开心冒泡"];
 const decisionModes = ["classic", "fresh", "budget"];
 const optionBudgets = ["¥", "¥¥", "¥¥¥"];
+const sharedMemoKinds = ["memo", "task", "event"];
+const sharedMemoCategories = ["daily", "date", "home", "shopping", "important", "other"];
+const sharedMemoRecurrences = ["none", "daily", "weekly", "monthly"];
+const notificationTemplateKeys = ["shared_memo", "health_reminder", "anniversary"];
 const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
@@ -81,7 +87,7 @@ const praiseMessages = [
   "给认真生活的你点个赞！",
 ];
 const teaseMessages = [
-  "农场小喇叭：快来打卡啦！",
+  "田地小喇叭：快来打卡啦！",
   "体重秤和小马桶都等困了。",
   "今日份轻轻嘲讽已经送达！",
 ];
@@ -108,6 +114,15 @@ function parseOccurrence(value) {
   const now = Date.now();
   if (!Number.isFinite(timestamp)) return null;
   if (timestamp > now + 5 * 60 * 1000 || timestamp < now - 30 * DAY) return null;
+  return Math.round(timestamp);
+}
+
+function parseSharedDueAt(value, required = false) {
+  if (value === null || value === undefined || value === "") return required ? null : undefined;
+  const timestamp = Number(value);
+  const now = Date.now();
+  if (!Number.isFinite(timestamp)) return null;
+  if (timestamp < now - 5 * 365 * DAY || timestamp > now + 10 * 365 * DAY) return null;
   return Math.round(timestamp);
 }
 
@@ -520,6 +535,25 @@ async function queryAll(name, condition, orders, maximum = 500) {
   return documents.map(normalizeDocument).filter(Boolean);
 }
 
+function errorDetails(error) {
+  return {
+    name: cleanText(error?.name || "Error", 64),
+    message: cleanText(error?.message || error?.errMsg || String(error || "Unknown error"), 240),
+    code: cleanText(error?.code || error?.errCode || "", 64) || null,
+  };
+}
+
+async function bestEffortQuery(name, condition, orders, maximum, warnings, stage) {
+  try {
+    return await queryAll(name, condition, orders, maximum);
+  } catch (error) {
+    const warning = cleanText(stage || name, 48);
+    warnings.push(warning);
+    console.warn("community feed partial query", { stage: warning, ...errorDetails(error) });
+    return [];
+  }
+}
+
 function getPlatformCaller() {
   try {
     const userInfo = app.auth().getUserInfo() || {};
@@ -556,7 +590,7 @@ function publicCouple(couple) {
   if (!couple) return null;
   return {
     id: couple.id,
-    farmName: cleanText(couple.farmName, 16) || "我们的情侣小农场",
+    farmName: cleanText(couple.farmName, 16) || "我们俩的小田地",
     togetherSince: parseDateString(couple.togetherSince, false),
     createdAt: couple.createdAt,
     updatedAt: couple.updatedAt || couple.createdAt,
@@ -573,7 +607,7 @@ async function getOrCreateUser(identity) {
   const now = Date.now();
   const fields = {
     uid: identity.uid,
-    nickname: "农场新朋友",
+    nickname: "田地新朋友",
     avatar: stableChoice(identity.uid, avatarChoices),
     avatarFileId: null,
     color: stableChoice(`${identity.uid}:color`, colorChoices),
@@ -736,7 +770,7 @@ async function readDashboard(user) {
   if (relationship.error) return relationship.error;
   const { couple, partner } = relationship;
   const now = Date.now();
-  const [weights, poops, reactions, anniversaries] = await Promise.all([
+  const [weights, poops, reactions, anniversaries, sharedMemoDocuments] = await Promise.all([
     queryAll(
       "weight_entries",
       { coupleId: couple.id, recordedAt: command.gte(now - 190 * DAY) },
@@ -761,7 +795,19 @@ async function readDashboard(user) {
       [["date", "asc"]],
       50,
     ),
+    queryAll("shared_memos", { coupleId: couple.id }, [], 120),
   ]);
+
+  const sharedMemos = sharedMemoDocuments
+    .filter((memo) => memo.status !== "deleted")
+    .map((memo) => publicSharedMemo(memo, couple))
+    .filter((memo) => memo.status === "open")
+    .sort((left, right) => {
+      if (left.dueAt === null && right.dueAt !== null) return 1;
+      if (left.dueAt !== null && right.dueAt === null) return -1;
+      return (left.dueAt || left.updatedAt) - (right.dueAt || right.updatedAt);
+    })
+    .slice(0, 8);
 
   return response(200, {
     viewer: publicUser(user, true),
@@ -771,6 +817,7 @@ async function readDashboard(user) {
     poops,
     reactions,
     anniversaries,
+    sharedMemos,
     serverTime: now,
   });
 }
@@ -802,8 +849,8 @@ async function updateProfile(user, payload, requestContext) {
   const avatar = cleanText(payload.avatar, 4);
   const color = cleanText(payload.color, 7);
   if (nickname.length < 1) return jsonError("昵称至少需要一个字。", 400, "NICKNAME_REQUIRED");
-  if (!avatarChoices.includes(avatar)) return jsonError("请选择农场里提供的头像。", 400, "AVATAR_INVALID");
-  if (color && !colorChoices.includes(color)) return jsonError("请选择农场里提供的代表色。", 400, "COLOR_INVALID");
+  if (!avatarChoices.includes(avatar)) return jsonError("请选择田地里提供的头像。", 400, "AVATAR_INVALID");
+  if (color && !colorChoices.includes(color)) return jsonError("请选择田地里提供的代表色。", 400, "COLOR_INVALID");
 
   const fields = {
     nickname,
@@ -835,7 +882,7 @@ async function updateCoupleSettings(user, payload) {
 
   if (Object.prototype.hasOwnProperty.call(payload, "farmName")) {
     const farmName = cleanText(payload.farmName, 16);
-    if (farmName.length < 2) return jsonError("农场名称至少需要两个字。", 400, "FARM_NAME_INVALID");
+    if (farmName.length < 2) return jsonError("田地名称至少需要两个字。", 400, "FARM_NAME_INVALID");
     fields.farmName = farmName;
   }
 
@@ -924,6 +971,239 @@ async function deleteAnniversary(user, payload) {
   return response(200, { ok: true });
 }
 
+function normalizeMemoAssignee(value, couple) {
+  const assignee = cleanText(value, 128);
+  if (assignee === "both") return "both";
+  return Array.isArray(couple.memberUids) && couple.memberUids.includes(assignee) ? assignee : "both";
+}
+
+function publicSharedMemo(memo, couple) {
+  const completedByUids = Array.isArray(memo.completedByUids)
+    ? [...new Set(memo.completedByUids.filter((uid) => couple.memberUids.includes(uid)))]
+    : [];
+  const assignee = normalizeMemoAssignee(memo.assignee, couple);
+  const requiredUids = assignee === "both" ? couple.memberUids : [assignee];
+  const completed = requiredUids.every((uid) => completedByUids.includes(uid));
+  return {
+    id: memo.id,
+    kind: sharedMemoKinds.includes(memo.kind) ? memo.kind : "memo",
+    title: cleanText(memo.title, 30),
+    note: cleanText(memo.note, 200),
+    category: sharedMemoCategories.includes(memo.category) ? memo.category : "other",
+    dueAt: Number.isFinite(Number(memo.dueAt)) ? Number(memo.dueAt) : null,
+    assignee,
+    recurrence: sharedMemoRecurrences.includes(memo.recurrence) ? memo.recurrence : "none",
+    reminderEnabled: Boolean(memo.reminderEnabled),
+    remindAt: Number.isFinite(Number(memo.remindAt)) ? Number(memo.remindAt) : null,
+    completedByUids,
+    completed,
+    status: completed ? "completed" : memo.status === "archived" ? "archived" : "open",
+    createdBy: memo.createdBy,
+    updatedBy: memo.updatedBy || memo.createdBy,
+    createdAt: Number(memo.createdAt) || Date.now(),
+    updatedAt: Number(memo.updatedAt) || Number(memo.createdAt) || Date.now(),
+  };
+}
+
+function sharedMemoFields(payload, couple, current = null) {
+  const kind = sharedMemoKinds.includes(payload.kind) ? payload.kind : current?.kind || "memo";
+  const title = cleanText(payload.title ?? current?.title, 30);
+  const note = cleanText(payload.note ?? current?.note, 200);
+  const category = sharedMemoCategories.includes(payload.category) ? payload.category : current?.category || "other";
+  const assignee = normalizeMemoAssignee(payload.assignee ?? current?.assignee, couple);
+  const recurrence = sharedMemoRecurrences.includes(payload.recurrence)
+    ? payload.recurrence
+    : current?.recurrence || "none";
+  const dueAtParsed = parseSharedDueAt(payload.dueAt ?? current?.dueAt, false);
+  const dueAt = dueAtParsed === undefined ? null : dueAtParsed;
+  const reminderEnabled = Boolean(payload.reminderEnabled ?? current?.reminderEnabled) && Boolean(dueAt);
+  const remindAtParsed = parseSharedDueAt(payload.remindAt ?? current?.remindAt, false);
+  let remindAt = reminderEnabled && remindAtParsed !== undefined ? remindAtParsed : null;
+  if (reminderEnabled && remindAt === null) remindAt = Math.max(Date.now(), dueAt - 60 * 60 * 1000);
+  if (title.length < 1) return { error: jsonError("给这件事起个名字吧。", 400, "MEMO_TITLE_REQUIRED") };
+  if (dueAtParsed === null) return { error: jsonError("日期时间不正确，请重新选择。", 400, "MEMO_DUE_INVALID") };
+  if (remindAtParsed === null || (remindAt && dueAt && remindAt > dueAt)) {
+    return { error: jsonError("提醒时间需要早于事项时间。", 400, "MEMO_REMINDER_INVALID") };
+  }
+  if (recurrence !== "none" && !dueAt) {
+    return { error: jsonError("重复事项需要先设置日期时间。", 400, "MEMO_RECURRENCE_REQUIRES_DUE") };
+  }
+  return { kind, title, note, category, assignee, recurrence, dueAt, reminderEnabled, remindAt };
+}
+
+function nextRecurringTimestamp(timestamp, recurrence) {
+  const date = new Date(timestamp);
+  if (recurrence === "daily") date.setDate(date.getDate() + 1);
+  if (recurrence === "weekly") date.setDate(date.getDate() + 7);
+  if (recurrence === "monthly") date.setMonth(date.getMonth() + 1);
+  return date.getTime();
+}
+
+async function sharedNotebook(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const documents = await queryAll("shared_memos", { coupleId: relationship.couple.id }, [], 300);
+  const items = documents
+    .filter((memo) => memo.status !== "deleted")
+    .map((memo) => publicSharedMemo(memo, relationship.couple))
+    .sort((left, right) => {
+      if (left.status !== right.status) return left.status === "open" ? -1 : 1;
+      if (left.dueAt === null && right.dueAt !== null) return 1;
+      if (left.dueAt !== null && right.dueAt === null) return -1;
+      return (left.dueAt || right.updatedAt) - (right.dueAt || left.updatedAt);
+    });
+  const grants = await queryAll("notification_subscriptions", { userUid: user.uid }, [], 100);
+  return response(200, {
+    items,
+    notification: {
+      availableQuota: grants.filter((grant) => grant.active !== false && Number(grant.remainingQuota) > 0).length,
+      configured: Boolean(process.env.WECHAT_MEMO_TEMPLATE_ID),
+      templateId: cleanText(process.env.WECHAT_MEMO_TEMPLATE_ID, 128) || null,
+    },
+    serverTime: Date.now(),
+  });
+}
+
+async function createSharedMemo(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const fields = sharedMemoFields(payload, relationship.couple);
+  if (fields.error) return fields.error;
+  const now = Date.now();
+  const memo = await addDocument("shared_memos", {
+    coupleId: relationship.couple.id,
+    ...fields,
+    completedByUids: [],
+    status: "open",
+    createdBy: user.uid,
+    updatedBy: user.uid,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { item: publicSharedMemo(memo, relationship.couple) });
+}
+
+async function updateSharedMemo(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("shared_memos", id) : null;
+  if (!current || current.coupleId !== relationship.couple.id || current.status === "deleted") {
+    return jsonError("没有找到这条共同事项。", 404, "MEMO_NOT_FOUND");
+  }
+  if (current.status === "completed") return jsonError("已完成的事项不能直接修改，请新建一条。", 409, "MEMO_COMPLETED");
+  const fields = sharedMemoFields(payload, relationship.couple, current);
+  if (fields.error) return fields.error;
+  const updated = await updateDocument("shared_memos", id, {
+    ...fields,
+    updatedBy: user.uid,
+    updatedAt: Date.now(),
+  });
+  return response(200, { item: publicSharedMemo(updated, relationship.couple) });
+}
+
+async function toggleSharedMemo(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("shared_memos", id) : null;
+  if (!current || current.coupleId !== relationship.couple.id || current.status === "deleted") {
+    return jsonError("没有找到这条共同事项。", 404, "MEMO_NOT_FOUND");
+  }
+  const assignee = normalizeMemoAssignee(current.assignee, relationship.couple);
+  if (assignee !== "both" && assignee !== user.uid) {
+    return jsonError("这件事分配给了伴侣，需要由 TA 完成。", 403, "MEMO_ASSIGNEE_REQUIRED");
+  }
+  const completedBy = new Set(Array.isArray(current.completedByUids) ? current.completedByUids : []);
+  if (current.status === "completed" && current.recurrence !== "none") {
+    return jsonError("重复事项已生成下一次，不需要撤销。", 409, "MEMO_RECURRENCE_ADVANCED");
+  }
+  if (completedBy.has(user.uid)) completedBy.delete(user.uid);
+  else completedBy.add(user.uid);
+  const completedByUids = [...completedBy].filter((uid) => relationship.couple.memberUids.includes(uid));
+  const requiredUids = assignee === "both" ? relationship.couple.memberUids : [assignee];
+  const completed = requiredUids.every((uid) => completedByUids.includes(uid));
+  const now = Date.now();
+  const updated = await updateDocument("shared_memos", id, {
+    completedByUids,
+    status: completed ? "completed" : "open",
+    completedAt: completed ? now : null,
+    updatedBy: user.uid,
+    updatedAt: now,
+  });
+  let nextItem = null;
+  if (completed && current.recurrence !== "none" && Number.isFinite(Number(current.dueAt))) {
+    const dueAt = nextRecurringTimestamp(Number(current.dueAt), current.recurrence);
+    const remindOffset = current.remindAt && current.dueAt ? Number(current.dueAt) - Number(current.remindAt) : null;
+    const nextId = `memo_${sha256(`${current.id}:${dueAt}`).slice(0, 40)}`;
+    const nextFields = {
+      ...current,
+      coupleId: relationship.couple.id,
+      dueAt,
+      remindAt: remindOffset === null ? null : dueAt - remindOffset,
+      completedByUids: [],
+      status: "open",
+      previousMemoId: current.id,
+      createdBy: current.createdBy,
+      updatedBy: user.uid,
+      createdAt: now,
+      updatedAt: now,
+    };
+    delete nextFields.id;
+    delete nextFields.completedAt;
+    nextItem = await setDocument("shared_memos", nextId, nextFields);
+  }
+  return response(200, {
+    item: publicSharedMemo(updated, relationship.couple),
+    nextItem: nextItem ? publicSharedMemo(nextItem, relationship.couple) : null,
+  });
+}
+
+async function deleteSharedMemo(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = cleanText(payload.id, 128);
+  const current = id ? await getDocument("shared_memos", id) : null;
+  if (!current || current.coupleId !== relationship.couple.id || current.status === "deleted") {
+    return jsonError("没有找到这条共同事项。", 404, "MEMO_NOT_FOUND");
+  }
+  if (current.createdBy !== user.uid) return jsonError("只有创建人可以删除这条事项。", 403, "MEMO_DELETE_FORBIDDEN");
+  await updateDocument("shared_memos", id, {
+    status: "deleted",
+    deletedBy: user.uid,
+    deletedAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  return response(200, { ok: true });
+}
+
+async function saveSubscriptionConsent(user, payload, requestContext) {
+  const templateKey = cleanText(payload.templateKey, 32);
+  const templateId = cleanText(payload.templateId, 128);
+  if (!notificationTemplateKeys.includes(templateKey) || !templateId) {
+    return jsonError("订阅消息模板不正确。", 400, "SUBSCRIPTION_TEMPLATE_INVALID");
+  }
+  if (!requestContext?.platformCaller?.openId || requestContext.channel !== "mini") {
+    return jsonError("订阅消息只能从微信小程序开启。", 403, "SUBSCRIPTION_MINI_ONLY");
+  }
+  const accepted = payload.result === "accept" || payload.result === "acceptWithAudio";
+  if (!accepted) return jsonError("这次没有获得提醒授权。", 409, "SUBSCRIPTION_NOT_ACCEPTED");
+  const now = Date.now();
+  const id = `subscription_${sha256(`${user.uid}:${templateId}:${now}:${randomId(4)}`).slice(0, 48)}`;
+  await setDocument("notification_subscriptions", id, {
+    userUid: user.uid,
+    openId: requestContext.platformCaller.openId,
+    templateKey,
+    templateId,
+    remainingQuota: 1,
+    active: true,
+    acceptedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return response(201, { ok: true, remainingQuota: 1 });
+}
+
 async function createInvite(user) {
   if (!user.profileComplete) return jsonError("先给自己取个昵称，再邀请伴侣吧。", 409, "PROFILE_REQUIRED");
   if (user.coupleId) return jsonError("你已经绑定伴侣了。", 409, "ALREADY_PAIRED");
@@ -974,7 +1254,7 @@ async function acceptInvite(user, payload) {
   await setDocument("couples", coupleId, {
     memberUids: [creator.uid, user.uid],
     status: "active",
-    farmName: cleanText(`${creator.nickname}和${user.nickname}的小农场`, 16),
+    farmName: cleanText(`${creator.nickname}和${user.nickname}的小田地`, 16),
     togetherSince: null,
     communityEnabled: false,
     communityBio: "",
@@ -1131,13 +1411,15 @@ async function clearMyRecords(user) {
 async function deleteIdentity(user) {
   await clearMyRecords(user);
   if (user.coupleId) await unbind(user);
-  const [accounts, sessions] = await Promise.all([
+  const [accounts, sessions, subscriptions] = await Promise.all([
     queryAll("accounts", { uid: user.uid }, [], 20),
     queryAll("sessions", { uid: user.uid }, [], 100),
+    queryAll("notification_subscriptions", { userUid: user.uid }, [], 100),
   ]);
   await Promise.all([
     removeDocuments("accounts", accounts),
     removeDocuments("sessions", sessions),
+    removeDocuments("notification_subscriptions", subscriptions),
     db.collection("users").doc(user.uid).remove(),
   ]);
   return response(200, { ok: true });
@@ -1407,7 +1689,7 @@ async function claimFounderTrial(user) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const current = membershipState(relationship.couple);
-  if (!current.trialAvailable) return jsonError("这片农场已经领取过内测体验啦。", 409, "TRIAL_ALREADY_CLAIMED");
+  if (!current.trialAvailable) return jsonError("这片田地已经领取过内测体验啦。", 409, "TRIAL_ALREADY_CLAIMED");
   const now = Date.now();
   const founderTrialUntil = now + FOUNDER_TRIAL_DAYS * DAY;
   const couple = await updateDocument("couples", relationship.couple.id, {
@@ -1465,7 +1747,7 @@ function publicCommunityStats(couple) {
     togetherDays: ["相伴", "天"],
     weeklyJointDays: ["本周共同打卡", "天"],
     weeklyCheers: ["本周互相回应", "次"],
-    farmVitality: ["农场活力", "点"],
+    farmVitality: ["田地活力", "点"],
   };
   return settings.publicStats.map((key) => ({
     key,
@@ -1548,18 +1830,25 @@ async function communityFeed(user, payload) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const mode = payload.mode === "following" ? "following" : "all";
+  const warnings = [];
   let viewerCouple = relationship.couple;
   if (normalizeCommunitySettings(viewerCouple).enabled) {
-    viewerCouple = await maybeRefreshCommunityStats(viewerCouple);
+    try {
+      viewerCouple = await maybeRefreshCommunityStats(viewerCouple);
+    } catch (error) {
+      warnings.push("viewer-stats");
+      console.warn("community viewer stats refresh skipped", { stage: "viewer-stats", ...errorDetails(error) });
+    }
   }
   const [couples, posts, comments, viewerLikes, follows, blocks] = await Promise.all([
-    queryAll("couples", {}, [], 200),
-    queryAll("community_posts", {}, [["createdAt", "desc"]], 120),
-    queryAll("community_comments", {}, [["createdAt", "desc"]], 240),
-    queryAll("community_reactions", { fromCoupleId: viewerCouple.id }, [], 200),
-    queryAll("community_follows", { fromCoupleId: viewerCouple.id }, [], 200),
-    queryAll("community_blocks", { fromCoupleId: viewerCouple.id }, [], 200),
+    bestEffortQuery("couples", {}, [], 200, warnings, "couples"),
+    bestEffortQuery("community_posts", {}, [], 120, warnings, "posts"),
+    bestEffortQuery("community_comments", {}, [], 240, warnings, "comments"),
+    bestEffortQuery("community_reactions", { fromCoupleId: viewerCouple.id }, [], 200, warnings, "likes"),
+    bestEffortQuery("community_follows", { fromCoupleId: viewerCouple.id }, [], 200, warnings, "follows"),
+    bestEffortQuery("community_blocks", { fromCoupleId: viewerCouple.id }, [], 200, warnings, "blocks"),
   ]);
+  if (!couples.some((couple) => couple.id === viewerCouple.id)) couples.push(viewerCouple);
   const enabledCouples = new Map(couples
     .filter((couple) => couple.status === "active" && couple.communityEnabled)
     .map((couple) => [couple.id, couple]));
@@ -1610,6 +1899,8 @@ async function communityFeed(user, payload) {
     stats: publicCommunityStats(viewerCouple),
     posts: hydratedPosts,
     leaderboard,
+    serviceState: warnings.length ? "degraded" : "healthy",
+    warningCount: warnings.length,
   });
 }
 
@@ -1617,7 +1908,7 @@ async function createCommunityPost(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   if (!relationship.couple.communityEnabled) {
-    return jsonError("先开启你们的社区农场名片，再来发动态吧。", 409, "COMMUNITY_DISABLED");
+    return jsonError("先开启你们的社区田地名片，再来发动态吧。", 409, "COMMUNITY_DISABLED");
   }
   if (await communityRateLimited("community_posts", user.uid, 15 * 60 * 1000, 5)) {
     return jsonError("发得有点快啦，歇一会儿再来村口聊。", 429, "POST_RATE_LIMITED");
@@ -1664,7 +1955,7 @@ async function toggleCommunityLike(user, payload) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   if (!relationship.couple.communityEnabled) {
-    return jsonError("先开启社区农场名片，才能给别人送花。", 409, "COMMUNITY_DISABLED");
+    return jsonError("先开启社区田地名片，才能给别人送花。", 409, "COMMUNITY_DISABLED");
   }
   const postId = cleanText(payload.postId, 128);
   const post = postId ? await getDocument("community_posts", postId) : null;
@@ -1693,7 +1984,7 @@ async function addCommunityComment(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   if (!relationship.couple.communityEnabled) {
-    return jsonError("先开启社区农场名片，才能参与留言。", 409, "COMMUNITY_DISABLED");
+    return jsonError("先开启社区田地名片，才能参与留言。", 409, "COMMUNITY_DISABLED");
   }
   if (await communityRateLimited("community_comments", user.uid, 10 * 60 * 1000, 12)) {
     return jsonError("留言有点快啦，稍等一会儿。", 429, "COMMENT_RATE_LIMITED");
@@ -1736,7 +2027,7 @@ async function deleteCommunityContent(user, payload) {
   const canDelete = type === "post"
     ? item.authorCoupleId === relationship.couple.id
     : item.authorUid === user.uid || item.authorCoupleId === relationship.couple.id;
-  if (!canDelete) return jsonError("只能删除自己农场发布的内容。", 403, "COMMUNITY_CONTENT_FORBIDDEN");
+  if (!canDelete) return jsonError("只能删除自己田地发布的内容。", 403, "COMMUNITY_CONTENT_FORBIDDEN");
   await updateDocument(collectionName, id, { status: "deleted", deletedAt: Date.now(), deletedBy: user.uid });
   if (type === "post" && item.imageFileId) await removeUploadedFile(item.imageFileId);
   if (type === "comment") {
@@ -1756,20 +2047,20 @@ async function toggleCommunityFollow(user, payload) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   if (!relationship.couple.communityEnabled) {
-    return jsonError("先开启社区农场名片，才能关注其他农场。", 409, "COMMUNITY_DISABLED");
+    return jsonError("先开启社区田地名片，才能关注其他田地。", 409, "COMMUNITY_DISABLED");
   }
   const toCoupleId = cleanText(payload.coupleId, 128);
   if (!toCoupleId || toCoupleId === relationship.couple.id) {
-    return jsonError("不能关注自己的农场。", 400, "FOLLOW_INVALID");
+    return jsonError("不能关注自己的田地。", 400, "FOLLOW_INVALID");
   }
   const target = await getDocument("couples", toCoupleId);
   if (!target || target.status !== "active" || !target.communityEnabled) {
-    return jsonError("这个农场暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
+    return jsonError("这片田地暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
   }
   const blockId = `block_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
   const block = await getDocument("community_blocks", blockId);
   if (block && block.active !== false) {
-    return jsonError("请先取消屏蔽，再关注这个农场。", 409, "COMMUNITY_FARM_BLOCKED");
+    return jsonError("请先取消屏蔽，再关注这片田地。", 409, "COMMUNITY_FARM_BLOCKED");
   }
   const id = `follow_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
   const current = await getDocument("community_follows", id);
@@ -1792,7 +2083,7 @@ async function reportCommunityContent(user, payload) {
   const id = cleanText(payload.id, 128);
   const item = id ? await getDocument(collectionName, id) : null;
   if (!item || item.status !== "published") return jsonError("这条内容已经不存在。", 404, "COMMUNITY_CONTENT_NOT_FOUND");
-  if (item.authorCoupleId === relationship.couple.id) return jsonError("不能举报自己农场的内容。", 400, "REPORT_SELF");
+  if (item.authorCoupleId === relationship.couple.id) return jsonError("不能举报自己田地的内容。", 400, "REPORT_SELF");
   const reasons = ["spam", "abuse", "privacy", "unsafe", "other"];
   const reason = reasons.includes(payload.reason) ? payload.reason : "other";
   const reportId = `report_${sha256(`${relationship.couple.id}:${type}:${id}`)}`;
@@ -1820,11 +2111,11 @@ async function blockCommunityFarm(user, payload) {
   if (relationship.error) return relationship.error;
   const toCoupleId = cleanText(payload.coupleId, 128);
   if (!toCoupleId || toCoupleId === relationship.couple.id) {
-    return jsonError("不能屏蔽自己的农场。", 400, "BLOCK_INVALID");
+    return jsonError("不能屏蔽自己的田地。", 400, "BLOCK_INVALID");
   }
   const target = await getDocument("couples", toCoupleId);
   if (!target || target.status !== "active" || !target.communityEnabled) {
-    return jsonError("这个农场暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
+    return jsonError("这片田地暂时没有开放社区名片。", 404, "COMMUNITY_FARM_NOT_FOUND");
   }
   const id = `block_${sha256(`${relationship.couple.id}:${toCoupleId}`)}`;
   await setDocument("community_blocks", id, {
@@ -1855,6 +2146,12 @@ async function handleAction(user, action, payload, requestContext) {
     case "add-anniversary": return addAnniversary(user, payload);
     case "update-anniversary": return updateAnniversary(user, payload);
     case "delete-anniversary": return deleteAnniversary(user, payload);
+    case "shared-notebook": return sharedNotebook(user);
+    case "create-shared-memo": return createSharedMemo(user, payload);
+    case "update-shared-memo": return updateSharedMemo(user, payload);
+    case "toggle-shared-memo": return toggleSharedMemo(user, payload);
+    case "delete-shared-memo": return deleteSharedMemo(user, payload);
+    case "save-subscription-consent": return saveSubscriptionConsent(user, payload, requestContext);
     case "add-weight": return addWeight(user, payload);
     case "add-poop": return addPoop(user, payload);
     case "update-weight": return updateWeight(user, payload);
@@ -1892,7 +2189,7 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.4.0",
+      version: "0.5.0",
       serverTime: Date.now(),
     });
   }
@@ -1908,7 +2205,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.4.0",
+        version: "0.5.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -1957,13 +2254,13 @@ exports.main = async function main(event = {}, context = {}) {
   } catch (error) {
     const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
     console.error("couple-tracker cloud function failed", {
-      platformUid: platformCaller.uid,
       action,
       diagnosticId,
-      error,
+      ...errorDetails(error),
+      stack: cleanText(error?.stack, 1000) || null,
     });
     return response(500, {
-      error: "小农场暂时打了个盹，请稍后再刷新一次。",
+      error: "小田地暂时打了个盹，请稍后再刷新一次。",
       code: "INTERNAL_ERROR",
       diagnosticId,
     });

@@ -6,8 +6,8 @@ const ci = require("miniprogram-ci");
 
 const appid = process.env.WECHAT_APP_ID || "wxa777aca89186974c";
 const privateKeyPath = process.env.WECHAT_UPLOAD_PRIVATE_KEY_PATH;
-const version = process.env.WECHAT_VERSION || "0.4.0";
-const desc = (process.env.WECHAT_DESC || "情侣小农场 0.4.0：今天一起、餐厅抽签与会员内测").slice(0, 32);
+const version = process.env.WECHAT_VERSION || "0.5.0";
+const desc = (process.env.WECHAT_DESC || "我们俩的小田地 0.5.0：共同小本本、提醒与村口修复").slice(0, 32);
 
 function fail(message) {
   console.error(message);
@@ -23,7 +23,7 @@ if (!privateKeyPath || !fs.existsSync(privateKeyPath)) {
 }
 
 if (!/^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)?$/.test(version)) {
-  fail("WECHAT_VERSION 必须是类似 0.4.0 的版本号。");
+  fail("WECHAT_VERSION 必须是类似 0.5.0 的版本号。");
 }
 
 const project = new ci.Project({

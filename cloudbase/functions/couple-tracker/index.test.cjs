@@ -6,6 +6,7 @@ const test = require("node:test");
 
 function createFakeCloudbase() {
   const collections = new Map();
+  const readFailures = new Set();
   let nextId = 1;
   let caller = null;
   const command = {
@@ -35,6 +36,7 @@ function createFakeCloudbase() {
         return api;
       },
       async get() {
+        if (readFailures.has(name)) throw new Error(`SIMULATED_READ_FAILURE:${name}`);
         if (!collections.has(name)) throw new Error("DATABASE_COLLECTION_NOT_EXIST");
         let documents = [...collections.get(name).values()];
         documents = documents.filter((document) => Object.entries(state.condition).every(([field, expected]) => {
@@ -109,6 +111,10 @@ function createFakeCloudbase() {
     setCaller(info) {
       caller = info;
     },
+    setReadFailure(name, enabled) {
+      if (enabled) readFailures.add(name);
+      else readFailures.delete(name);
+    },
   };
 }
 
@@ -157,7 +163,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.4.0");
+  assert.equal(result.data.version, "0.5.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -165,7 +171,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.4.0");
+  assert.equal(result.data.version, "0.5.0");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -352,6 +358,71 @@ test("supports editable profiles, farm settings, reminders and anniversaries", a
   assert.equal(removed.status, 200);
 });
 
+test("supports a shared notebook with assignments, recurring tasks and reminder grants", async () => {
+  const firstDashboard = await invoke("browser-a", "get-dashboard", {}, firstToken);
+  const firstUid = firstDashboard.data.viewer.uid;
+  const secondUid = firstDashboard.data.partner.uid;
+  const dueAt = Date.now() + 2 * 60 * 60 * 1000;
+  const created = await invoke("browser-a", "create-shared-memo", {
+    kind: "task",
+    title: "一起订周末餐厅",
+    note: "周五晚上之前决定",
+    category: "date",
+    dueAt,
+    assignee: "both",
+    recurrence: "daily",
+    reminderEnabled: true,
+    remindAt: dueAt - 60 * 60 * 1000,
+  }, firstToken);
+  assert.equal(created.status, 201);
+  assert.equal(created.data.item.completed, false);
+
+  const firstDone = await invoke("browser-a", "toggle-shared-memo", { id: created.data.item.id }, firstToken);
+  assert.equal(firstDone.status, 200);
+  assert.equal(firstDone.data.item.completed, false);
+  assert.deepEqual(firstDone.data.item.completedByUids, [firstUid]);
+
+  const secondDone = await invoke("browser-b", "toggle-shared-memo", { id: created.data.item.id }, secondToken);
+  assert.equal(secondDone.status, 200);
+  assert.equal(secondDone.data.item.completed, true);
+  assert.ok(secondDone.data.nextItem);
+  assert.equal(secondDone.data.nextItem.status, "open");
+  assert.ok(secondDone.data.nextItem.dueAt > dueAt);
+
+  const assigned = await invoke("browser-a", "create-shared-memo", {
+    kind: "task",
+    title: "记得带充电器",
+    category: "daily",
+    assignee: secondUid,
+    recurrence: "none",
+  }, firstToken);
+  const wrongAssignee = await invoke("browser-a", "toggle-shared-memo", { id: assigned.data.item.id }, firstToken);
+  assert.equal(wrongAssignee.status, 403);
+  assert.equal(wrongAssignee.data.code, "MEMO_ASSIGNEE_REQUIRED");
+  const partnerDone = await invoke("browser-b", "toggle-shared-memo", { id: assigned.data.item.id }, secondToken);
+  assert.equal(partnerDone.status, 200);
+  assert.equal(partnerDone.data.item.completed, true);
+
+  const partnerDelete = await invoke("browser-b", "delete-shared-memo", { id: created.data.item.id }, secondToken);
+  assert.equal(partnerDelete.status, 403);
+  assert.equal(partnerDelete.data.code, "MEMO_DELETE_FORBIDDEN");
+
+  const notebook = await invoke("browser-b", "shared-notebook", {}, secondToken);
+  assert.equal(notebook.status, 200);
+  assert.ok(notebook.data.items.some((item) => item.id === secondDone.data.nextItem.id));
+  const dashboard = await invoke("browser-a", "get-dashboard", {}, firstToken);
+  assert.ok(dashboard.data.sharedMemos.some((item) => item.id === secondDone.data.nextItem.id));
+
+  const subscription = await invoke(
+    { uid: "browser-a", openId: "openid-a", appId: "wx-app" },
+    "save-subscription-consent",
+    { templateKey: "shared_memo", templateId: "test-template-id", result: "accept" },
+    firstToken,
+    "mini",
+  );
+  assert.equal(subscription.status, 201);
+});
+
 test("supports daily couple rituals, restaurant decisions and membership trials", async () => {
   const date = "2026-07-16";
   const initial = await invoke("browser-a", "together-hub", { date }, firstToken);
@@ -447,7 +518,7 @@ test("supports a moderated community feed with images, follows, likes, comments 
   const secondMiniCaller = { uid: "browser-c", openId: "openid-c", appId: "wx-app" };
   const firstSettings = await invoke(firstMiniCaller, "update-community-settings", {
     enabled: true,
-    bio: "一起认真生活的小农场",
+    bio: "一起认真生活的小田地",
     publicStats: ["togetherDays", "weeklyJointDays", "weeklyCheers", "farmVitality"],
   }, firstToken, "mini");
   assert.equal(firstSettings.status, 200);
@@ -480,9 +551,17 @@ test("supports a moderated community feed with images, follows, likes, comments 
 
   const feed = await invoke(firstMiniCaller, "community-feed", { mode: "all" }, firstToken, "mini");
   assert.equal(feed.status, 200);
+  assert.equal(feed.data.serviceState, "healthy");
   assert.equal(feed.data.posts.length, 1);
   assert.equal(feed.data.posts[0].likedByViewer, false);
   assert.equal(feed.data.posts[0].shareStat.key, "farmVitality");
+
+  fakeCloudbase.setReadFailure("community_comments", true);
+  const degradedFeed = await invoke(firstMiniCaller, "community-feed", { mode: "all" }, firstToken, "mini");
+  fakeCloudbase.setReadFailure("community_comments", false);
+  assert.equal(degradedFeed.status, 200);
+  assert.equal(degradedFeed.data.serviceState, "degraded");
+  assert.equal(degradedFeed.data.posts.length, 1);
 
   const followed = await invoke(firstMiniCaller, "toggle-community-follow", {
     coupleId: secondCoupleId,

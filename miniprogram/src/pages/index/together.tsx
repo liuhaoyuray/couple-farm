@@ -205,7 +205,7 @@ export default function TogetherPanel({
   return (
     <>
       <View className="page-heading together-heading">
-        <Text className="kicker">情侣小农场 · 0.4.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.5.0</Text>
         <Text className="title">今天，一起做点什么</Text>
         <Text className="description">每天一分钟对个暗号，吃什么也不用再互相说“随便”。</Text>
       </View>
@@ -240,7 +240,7 @@ export default function TogetherPanel({
       </View>
 
       <View className="panel restaurant-panel">
-        <Text className="kicker">今晚吃什么</Text><Text className="subtitle">把“随便”交给小农场</Text>
+        <Text className="kicker">今晚吃什么</Text><Text className="subtitle">把“随便”交给小田地</Text>
         {hub.currentDecision
           ? <View className="decision-card"><Text className="decision-confetti">✨ 🍽️ ✨</Text><Text className="decision-name">{hub.currentDecision.optionLabel}</Text><Text className="decision-meta">{hub.currentDecision.cuisine || "好吃就行"} · {hub.currentDecision.budget}</Text><Text className="role">{hub.currentDecision.confirmedByUids.length === 2 ? "两个人都同意啦" : `还差 ${hub.currentDecision.confirmedByUids.includes(viewer.uid) ? partner.nickname : viewer.nickname} 确认`}</Text><View className="decision-actions"><Button className="primary" disabled={hub.currentDecision.confirmedByUids.includes(viewer.uid) || busy} onClick={() => act("respond-together-decision", { id: hub.currentDecision?.id, response: "confirm" }, "就吃这家")}>✓ 同意</Button><Button className="secondary" disabled={busy} onClick={() => act("respond-together-decision", { id: hub.currentDecision?.id, response: "veto" }, "行，换一家")}>↻ 这次否决</Button></View></View>
           : <><View className="decision-modes">{modes.map((item) => <Button key={item.key} className={mode === item.key ? "active" : ""} onClick={() => chooseMode(item.key)}><Text>{item.label}{item.key !== "classic" && !plus ? " 🔒" : ""}</Text><Text>{item.detail}</Text></Button>)}</View>{mode === "budget" && <Picker mode="selector" range={[...budgets]} value={budgets.indexOf(spinBudget)} onChange={(event) => setSpinBudget(budgets[Number(event.detail.value)] || "¥¥")}><View className="budget-picker">本次预算：{spinBudget}<Text>修改 ›</Text></View></Picker>}<Button className="spin-button" disabled={busy || hub.options.length < 2} onClick={() => act("spin-together-decision", { mode, budget: spinBudget }, "结果出来啦")}>{hub.options.length < 2 ? "至少放进 2 家餐厅" : "🎲 开始抽一家"}</Button></>}

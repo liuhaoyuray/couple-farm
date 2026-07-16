@@ -10,7 +10,7 @@
       "handler": "index.main",
       "timeout": 15,
       "memorySize": 256,
-      "description": "情侣小农场：账户、配对、纪念日与共享记录"
+      "description": "我们俩的小田地：账户、配对、纪念日与共享记录"
     }
   ]
 }

@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "情侣小农场",
-  description: "情侣共同记录生活、纪念日与成长的双人小农场。",
+  title: "我们俩的小田地",
+  description: "情侣共同记录生活、纪念日与成长的双人小田地。",
   other: {
     "codex-preview": "development",
   },

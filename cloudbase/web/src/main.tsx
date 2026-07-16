@@ -64,7 +64,7 @@ if (!envId) {
     <main className="formal-access">
       <section className="formal-access-card">
         <div className="formal-logo" aria-hidden="true">♥</div>
-        <p className="formal-kicker">小农场正在搬家</p>
+        <p className="formal-kicker">小田地正在搬家</p>
         <h1>腾讯云环境还没有连接好</h1>
         <p>构建缺少 VITE_CLOUDBASE_ENV_ID，请重新生成发布包。</p>
       </section>

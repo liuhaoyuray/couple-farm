@@ -1,11 +1,6 @@
 name: 诊断 CloudBase 线上错误
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/diagnose-cloudbase.yml"
-      - "scripts/filter-cloudbase-diagnostic.cjs"
   workflow_dispatch:
     inputs:
       diagnostic_id:
@@ -26,7 +21,7 @@ jobs:
 
       - name: 校验诊断码
         env:
-          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id || '611ca25d' }}
+          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id }}
         run: test "$(printf '%s' "$DIAGNOSTIC_ID" | sed -E 's/^[A-Za-z0-9_-]{6,64}$//')" = ""
 
       - name: 安装 CloudBase CLI
@@ -42,7 +37,7 @@ jobs:
 
       - name: 精确检索并脱敏输出
         env:
-          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id || '611ca25d' }}
+          DIAGNOSTIC_ID: ${{ inputs.diagnostic_id }}
           TCB_ENV_ID: couple-farm-d8gtiahu251a27c23
           DIAGNOSTIC_ENCRYPTION_KEY: ${{ secrets.DIAGNOSTIC_ENCRYPTION_KEY }}
         run: |
@@ -69,7 +64,7 @@ jobs:
       - name: 保存加密诊断结果
         uses: actions/upload-artifact@v4
         with:
-          name: cloudbase-diagnostic-${{ inputs.diagnostic_id || '611ca25d' }}
+          name: cloudbase-diagnostic-${{ inputs.diagnostic_id }}
           path: ${{ runner.temp }}/cloudbase-diagnostic.enc
           retention-days: 1
           if-no-files-found: error

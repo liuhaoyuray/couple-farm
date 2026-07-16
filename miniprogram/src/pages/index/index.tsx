@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { cloudCall } from "../../cloud";
 import { imageUploadErrorMessage, prepareImageForUpload } from "../../media";
 import CommunityPanel from "./community";
+import NotebookPanel from "./notebook";
 import TogetherPanel from "./together";
 import "./index.scss";
 
@@ -84,10 +85,22 @@ type FarmData = {
   poops?: PoopEntry[];
   reactions?: Reaction[];
   anniversaries?: Anniversary[];
+  sharedMemos?: SharedMemoSummary[];
   serverTime: number;
 };
 
-type TabKey = "farm" | "trends" | "together" | "village" | "anniversaries" | "us";
+type SharedMemoSummary = {
+  id: string;
+  kind: "memo" | "task" | "event";
+  title: string;
+  note: string;
+  dueAt: number | null;
+  assignee: "both" | string;
+  completedByUids: string[];
+  status: "open" | "completed" | "archived";
+};
+
+type TabKey = "farm" | "notebook" | "trends" | "together" | "village" | "anniversaries" | "us";
 type RecordItem = {
   id: string;
   type: "weight" | "poop";
@@ -229,8 +242,8 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">情侣小农场 · 0.4.0</Text>
-        <Text className="title">{error ? "小农场打了个盹" : "正在打开情侣小农场"}</Text>
+        <Text className="kicker">我们俩的小田地 · 0.5.0</Text>
+        <Text className="title">{error ? "小田地打了个盹" : "正在打开我们俩的小田地"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
       </View>
@@ -270,7 +283,7 @@ export default function IndexPage() {
   const [editingAnniversaryId, setEditingAnniversaryId] = useState<string | null>(null);
 
   const hydrateForms = useCallback((next: FarmData) => {
-    setProfileNickname(next.viewer.nickname === "农场新朋友" ? "" : next.viewer.nickname);
+    setProfileNickname(["农场新朋友", "田地新朋友"].includes(next.viewer.nickname) ? "" : next.viewer.nickname);
     setProfileAvatar(next.viewer.avatar || "🐣");
     setProfileAvatarFileId(next.viewer.avatarFileId || null);
     setProfileColor(next.viewer.color || colors[0]);
@@ -413,7 +426,7 @@ export default function IndexPage() {
     await runAction("update-couple-settings", {
       farmName: farmName.trim(),
       togetherSince: togetherSince || null,
-    }, "农场更新啦");
+    }, "田地更新啦");
   };
 
   const saveReminderSettings = async () => {
@@ -422,8 +435,8 @@ export default function IndexPage() {
 
   const addDailyCalendarReminder = async (kind: "weight" | "poop") => {
     const rule = reminders[kind];
-    const title = kind === "weight" ? "情侣小农场 · 记体重" : "情侣小农场 · 记如厕";
-    const description = kind === "weight" ? "打开情侣小农场，记录今天的体重。" : "打开情侣小农场，记录今天的如厕情况。";
+    const title = kind === "weight" ? "我们俩的小田地 · 记体重" : "我们俩的小田地 · 记如厕";
+    const description = kind === "weight" ? "打开我们俩的小田地，记录今天的体重。" : "打开我们俩的小田地，记录今天的如厕情况。";
     try {
       await Taro.addPhoneRepeatCalendar({
         title,
@@ -466,7 +479,7 @@ export default function IndexPage() {
     const occurrence = nextOccurrence(anniversary);
     try {
       const options = {
-        title: `情侣小农场 · ${anniversary.title}`,
+        title: `我们俩的小田地 · ${anniversary.title}`,
         startTime: Math.floor(occurrence.getTime() / 1000),
         allDay: true,
         description: anniversary.note || `${anniversary.title}纪念日`,
@@ -541,7 +554,7 @@ export default function IndexPage() {
 
   const deleteIdentity = async () => {
     const confirm = await Taro.showModal({
-      title: "注销我的农场身份？",
+      title: "注销我的田地身份？",
       content: "会清空本人记录、解除伴侣绑定并删除当前微信身份数据，无法恢复。",
       confirmText: "确认注销",
       confirmColor: "#b32a50",
@@ -558,6 +571,7 @@ export default function IndexPage() {
   const poops = useMemo(() => data?.poops || [], [data?.poops]);
   const reactions = useMemo(() => data?.reactions || [], [data?.reactions]);
   const anniversaries = useMemo(() => data?.anniversaries || [], [data?.anniversaries]);
+  const sharedMemos = useMemo(() => data?.sharedMemos || [], [data?.sharedMemos]);
   const people = useMemo(
     () => data?.partner ? [data.viewer, data.partner] : data ? [data.viewer] : [],
     [data],
@@ -603,8 +617,19 @@ export default function IndexPage() {
         }
       }
     }
+    const reminderTime = data.serverTime;
+    for (const memo of sharedMemos.filter((item) => item.dueAt && item.dueAt <= reminderTime + DAY).slice(0, 3)) {
+      const mineDone = memo.completedByUids.includes(viewer.uid);
+      cards.push({
+        key: `memo-${memo.id}`,
+        icon: memo.kind === "event" ? "📅" : memo.kind === "task" ? "✅" : "📝",
+        title: memo.title,
+        detail: mineDone ? "我已完成，等待对方" : memo.dueAt && memo.dueAt < reminderTime ? "已经到时间啦" : "24 小时内要做",
+        tab: "notebook",
+      });
+    }
     return cards;
-  }, [data, poops, sortedAnniversaries, weights]);
+  }, [data, poops, sharedMemos, sortedAnniversaries, weights]);
 
   const nextMilestone = useMemo(() => {
     if (!coupleDays) return null;
@@ -694,17 +719,17 @@ export default function IndexPage() {
 
   if (loading) return <Loading />;
   if (error && !data) return <Loading error={error} retry={() => bootstrap()} />;
-  if (!data) return <Loading error="没有拿到农场数据。" retry={() => bootstrap()} />;
+  if (!data) return <Loading error="没有拿到田地数据。" retry={() => bootstrap()} />;
 
   if (!data.viewer.profileComplete) {
     return (
       <View className="full-page">
         <View className="message-card profile-card">
           <Text className="kicker">第一次见面</Text>
-          <Text className="title">你想在农场里叫什么？</Text>
+          <Text className="title">你想在田地里叫什么？</Text>
           <Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="例如 小麦苗、团子、阿星" />
           <View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">设置自己的图片头像</Text><Text className="role">支持相册或拍照，保存时会进行安全检查</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View>
-          <Text className="community-label">或者选择一个农场居民</Text>
+          <Text className="community-label">或者选择一个田地居民</Text>
           <View className="avatar-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View>
           <View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View>
           {error && <Text className="error">{error}</Text>}
@@ -747,7 +772,7 @@ export default function IndexPage() {
 
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">情侣小农场 · 0.4.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <View><Text className="kicker">我们俩的小田地 · 0.5.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>
@@ -756,6 +781,8 @@ export default function IndexPage() {
 
             {reminderCards.length > 0 && <View className="reminder-stack">{reminderCards.map((card) => <View className="reminder-card" key={card.key} onClick={() => setActiveTab(card.tab)}><Text className="reminder-icon">{card.icon}</Text><View><Text className="activity-title">{card.title}</Text><Text className="role">{card.detail}</Text></View><Text className="chevron">›</Text></View>)}</View>}
 
+            <View className="panel today-board" onClick={() => setActiveTab("notebook")}><View className="section-heading"><View><Text className="kicker">今天的小本本</Text><Text className="subtitle">两个人都不用靠脑子硬记</Text></View><Text className="board-count">{sharedMemos.length}</Text></View>{sharedMemos.slice(0, 3).map((memo) => <View className="board-row" key={memo.id}><Text>{memo.kind === "event" ? "📅" : memo.kind === "task" ? "✅" : "📝"}</Text><View><Text className="activity-title">{memo.title}</Text><Text className="role">{memo.dueAt ? formatDateTime(memo.dueAt) : "随时都可以完成"}</Text></View><Text className="chevron">›</Text></View>)}{!sharedMemos.length && <Text className="empty compact-empty">还没有共同事项，点这里记下一件。</Text>}</View>
+
             <View className="milestone-grid">
               <View className="milestone-card"><Text className="milestone-icon">💗</Text><Text className="metric-value">{nextMilestone ? `${nextMilestone.remaining}天` : "待设置"}</Text><Text className="role">{nextMilestone ? `距离第 ${nextMilestone.day} 天` : "设置相恋日期"}</Text></View>
               <View className="milestone-card"><Text className="milestone-icon">📅</Text><Text className="metric-value">{sortedAnniversaries[0] ? `${daysUntil(nextOccurrence(sortedAnniversaries[0]).getTime())}天` : "待添加"}</Text><Text className="role">{sortedAnniversaries[0]?.title || "添加纪念日"}</Text></View>
@@ -763,7 +790,9 @@ export default function IndexPage() {
 
             <View className="people-grid">{people.map((person) => { const latest = latestWeight(weights, person.uid); return <View key={person.uid} className="person-card" style={{ borderColor: person.color }}><View className="person-head"><ProfileAvatar profile={person} size="small" /><View><Text className="role">{person.uid === viewer.uid ? "我的田" : "伴侣的田"}</Text><Text className="subtitle compact-title">{person.nickname}</Text></View></View><View className="metrics"><View><Text className="metric-value">{latest ? latest.weightKg.toFixed(1) : "--"}</Text><Text>kg</Text></View><View><Text className="metric-value">{todayPoops(poops, person.uid)}</Text><Text>今日如厕</Text></View></View></View>; })}</View>
 
-            <View className="panel progress-panel"><View className="section-heading"><View><Text className="kicker">今日农活</Text><Text className="subtitle">完成记录，让农场长大</Text></View><Text className="progress-number">{farmProgress}%</Text></View><View className="progress-track"><View className="progress-fill" style={{ width: `${farmProgress}%` }} /></View><View className="task-row"><Text className={myWeightDone ? "task done" : "task"}>⚖️ {myWeightDone ? "已称重" : "待称重"}</Text><Text className={myPoopDone ? "task done" : "task"}>🚽 {myPoopDone ? "已记录" : "待记录"}</Text></View></View>
+            <View className="panel progress-panel"><View className="section-heading"><View><Text className="kicker">今日耕耘</Text><Text className="subtitle">完成记录，让田地长大</Text></View><Text className="progress-number">{farmProgress}%</Text></View><View className="progress-track"><View className="progress-fill" style={{ width: `${farmProgress}%` }} /></View><View className="task-row"><Text className={myWeightDone ? "task done" : "task"}>⚖️ {myWeightDone ? "已称重" : "待称重"}</Text><Text className={myPoopDone ? "task done" : "task"}>🚽 {myPoopDone ? "已记录" : "待记录"}</Text></View></View>
+
+            <View className="farm-shortcuts"><Button onClick={() => setActiveTab("trends")}><Text>📈</Text><View><Text className="activity-title">共同趋势</Text><Text className="role">体重与如厕变化</Text></View><Text className="chevron">›</Text></Button><Button onClick={() => setActiveTab("anniversaries")}><Text>💞</Text><View><Text className="activity-title">纪念日</Text><Text className="role">重要日子与倒计时</Text></View><Text className="chevron">›</Text></Button></View>
 
             <View className="panel action-panel"><Text className="kicker">快速记录</Text><Text className="subtitle">{editingWeightId || editingPoopId ? "正在修改一条记录" : "我的今天"}</Text><View className="date-row"><Picker mode="date" value={recordDate} onChange={(event) => setRecordDate(String(event.detail.value))}><View className="picker-field">📅 {recordDate}</View></Picker><Picker mode="time" value={recordTime} onChange={(event) => setRecordTime(String(event.detail.value))}><View className="picker-field">🕐 {recordTime}</View></Picker></View><View className="weight-row"><Input className="field" type="digit" value={weight} onInput={(event) => setWeight(event.detail.value)} placeholder="体重 kg，例如 68.4" /><Button className="primary compact" loading={busy} onClick={saveWeight}>{editingWeightId ? "保存" : "记体重"}</Button></View><Button className="secondary full" loading={busy} onClick={savePoop}>{editingPoopId ? "保存如厕时间" : "🚽 记一次如厕"}</Button>{(editingWeightId || editingPoopId) && <Button className="text-button" onClick={resetRecordForm}>取消修改</Button>}</View>
 
@@ -773,7 +802,7 @@ export default function IndexPage() {
           </>}
 
           {activeTab === "trends" && <>
-            <View className="page-heading"><Text className="kicker">共同趋势</Text><Text className="title">认真生活，也看得见变化</Text><Text className="description">曲线只展示你们两个人共享农场里的记录。</Text></View>
+            <View className="page-heading"><Text className="kicker">共同趋势</Text><Text className="title">认真生活，也看得见变化</Text><Text className="description">曲线只展示你们两个人共享田地里的记录。</Text></View>
             <View className="panel chart-panel"><View className="section-heading"><View><Text className="subtitle">体重曲线</Text><View className="legend-row">{people.map((person) => <Text key={person.uid}><Text className="legend-dot" style={{ background: person.color }} />{person.nickname}</Text>)}</View></View><View className="range-tabs">{([7, 30, 90] as const).map((range) => <Button key={range} className={trendRange === range ? "active" : ""} onClick={() => setTrendRange(range)}>{range}天</Button>)}</View></View><Canvas canvasId="weightChart" id="weightChart" className="weight-chart" /></View>
 
             <View className="people-grid">{people.map((person) => { const own = weights.filter((entry) => entry.ownerUid === person.uid && entry.recordedAt >= Date.now() - trendRange * DAY).sort((left, right) => left.recordedAt - right.recordedAt); const change = own.length > 1 ? own[own.length - 1].weightKg - own[0].weightKg : null; return <View className="stat-card" key={person.uid} style={{ borderColor: person.color }}><Text className="role">{person.nickname} · {trendRange} 天</Text><Text className="stat-large">{change === null ? "--" : `${change > 0 ? "+" : ""}${change.toFixed(1)}`}<Text> kg</Text></Text><Text className="role">区间体重变化</Text></View>; })}</View>
@@ -785,10 +814,12 @@ export default function IndexPage() {
 
           {activeTab === "together" && <TogetherPanel viewer={viewer} partner={partner} onOpenAnniversaries={() => setActiveTab("anniversaries")} />}
 
+          {activeTab === "notebook" && <NotebookPanel viewer={viewer} partner={partner} onChanged={() => { void bootstrap(true); }} />}
+
           {activeTab === "village" && <CommunityPanel viewer={viewer} couple={data.couple} />}
 
           {activeTab === "anniversaries" && <>
-            <View className="page-heading"><Text className="kicker">我们的故事</Text><Text className="title">把重要的日子种进农场</Text><Text className="description">可以写入手机系统日历，即使不打开小程序也能收到提醒。</Text></View>
+            <View className="page-heading"><Text className="kicker">我们的故事</Text><Text className="title">把重要的日子种进田地</Text><Text className="description">可以写入手机系统日历，即使不打开小程序也能收到提醒。</Text></View>
 
             {data.couple.togetherSince && <View className="love-days-card"><Text className="love-icon">💞</Text><View><Text className="kicker">从 {formatDateLabel(data.couple.togetherSince)} 开始</Text><Text className="love-days">在一起第 {coupleDays} 天</Text><Text className="description small">{nextMilestone ? `距离第 ${nextMilestone.day} 天还有 ${nextMilestone.remaining} 天` : "每一天都值得纪念"}</Text></View></View>}
 
@@ -798,23 +829,23 @@ export default function IndexPage() {
           </>}
 
           {activeTab === "us" && <>
-            <View className="page-heading"><Text className="kicker">我们与设置</Text><Text className="title">把小农场变成你们的样子</Text></View>
+            <View className="page-heading"><Text className="kicker">我们与设置</Text><Text className="title">把小田地变成你们的样子</Text></View>
 
-            <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">相册或拍照均可</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">农场 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
+            <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">相册或拍照均可</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">田地 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
 
-            <View className="panel"><Text className="kicker">共同农场</Text><Text className="subtitle">农场名称和相恋日期</Text><Input className="field" value={farmName} onInput={(event) => setFarmName(event.detail.value)} maxlength={16} placeholder="给农场取个名字" /><Picker mode="date" value={togetherSince || dateValue()} end={dateValue()} onChange={(event) => setTogetherSince(String(event.detail.value))}><View className="picker-field settings-picker">💞 {togetherSince || "选择在一起的日期"}</View></Picker><Button className="primary" loading={busy} onClick={saveFarmSettings}>保存共同农场</Button></View>
+            <View className="panel"><Text className="kicker">共同田地</Text><Text className="subtitle">田地名称和相恋日期</Text><Input className="field" value={farmName} onInput={(event) => setFarmName(event.detail.value)} maxlength={16} placeholder="给田地取个名字" /><Picker mode="date" value={togetherSince || dateValue()} end={dateValue()} onChange={(event) => setTogetherSince(String(event.detail.value))}><View className="picker-field settings-picker">💞 {togetherSince || "选择在一起的日期"}</View></Picker><Button className="primary" loading={busy} onClick={saveFarmSettings}>保存共同田地</Button></View>
 
             <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">别让秤和小马桶等困了</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">打开小程序时检查今日记录</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">到点且今天未记录时提示</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">💞 纪念日提醒</Text><Text className="role">提前 7 天、1 天和当天提示</Text></View><Switch checked={reminders.anniversary.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, anniversary: { ...current.anniversary, enabled: event.detail.value } }))} /></View><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存小程序内提醒</Button><Text className="fine-print">手机日历提醒由系统日历管理；重复点击可能生成重复日程。</Text></View>
 
-            <View className="panel privacy-panel"><Text className="kicker">隐私与数据</Text><Text className="subtitle">你的记录由你管理</Text><Text className="description small">体重、如厕、配对和互动数据只用于情侣小农场功能，并只向当前绑定伴侣展示。</Text><Button className="outline-danger" onClick={clearMyRecords}>清空我的记录</Button><Button className="outline-danger" onClick={unbind}>解除伴侣绑定</Button><Button className="danger-solid" onClick={deleteIdentity}>注销我的农场身份</Button></View>
+            <View className="panel privacy-panel"><Text className="kicker">隐私与数据</Text><Text className="subtitle">你的记录由你管理</Text><Text className="description small">体重、如厕、配对和互动数据只用于我们俩的小田地功能，并只向当前绑定伴侣展示。</Text><Button className="outline-danger" onClick={clearMyRecords}>清空我的记录</Button><Button className="outline-danger" onClick={unbind}>解除伴侣绑定</Button><Button className="danger-solid" onClick={deleteIdentity}>注销我的田地身份</Button></View>
           </>}
         </View>
       </ScrollView>
 
       <View className="tab-bar">
         {([
-          ["farm", "🏡", "农场"],
-          ["trends", "📈", "趋势"],
+          ["farm", "🏡", "田地"],
+          ["notebook", "📒", "小本本"],
           ["together", "🎲", "一起"],
           ["village", "🌾", "村口"],
           ["us", "⚙️", "我们"],

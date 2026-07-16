@@ -77,6 +77,8 @@ type CommunityData = {
   stats: CommunityStat[];
   posts: CommunityPost[];
   leaderboard: CommunityFarm[];
+  serviceState: "healthy" | "degraded";
+  warningCount: number;
 };
 
 const topicChoices = [
@@ -90,7 +92,7 @@ const statChoices = [
   ["togetherDays", "相伴天数"],
   ["weeklyJointDays", "共同打卡"],
   ["weeklyCheers", "互相回应"],
-  ["farmVitality", "农场活力"],
+  ["farmVitality", "田地活力"],
 ] as const;
 
 function timeAgo(timestamp: number) {
@@ -267,7 +269,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
   const blockFarm = async (post: CommunityPost) => {
     const confirmed = await Taro.showModal({
       title: `屏蔽“${post.farmName}”？`,
-      content: "之后不会再看到这个农场的动态。",
+      content: "之后不会再看到这片田地的动态。",
       confirmText: "确认屏蔽",
       confirmColor: "#b32a50",
     });
@@ -290,19 +292,20 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
   return (
     <>
       <View className="page-heading community-heading">
-        <Text className="kicker">情侣农场村 · 0.4.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.5.0</Text>
         <Text className="title">来村口看看大家</Text>
-        <Text className="description">只有主动发布和勾选的内容会公开，体重和如厕原始记录永远留在两个人的农场里。</Text>
+        <Text className="description">只有主动发布和勾选的内容会公开，体重和如厕原始记录永远留在两个人的田地里。</Text>
       </View>
 
       {error && <View className="error-banner"><Text>{error}</Text><Button onClick={() => setError(null)}>×</Button></View>}
+      {data.serviceState === "degraded" && <View className="community-service-note"><Text>🌤 村口已打开，但少量旧动态暂时没有加载。你仍可查看和发布，稍后会自动恢复。</Text><Button onClick={() => load(mode)}>刷新</Button></View>}
 
       <View className="panel community-settings">
         <View className="setting-row">
-          <View><Text className="subtitle">公开我们的农场名片</Text><Text className="role">开启后才能发帖、留言、点赞和关注</Text></View>
+          <View><Text className="subtitle">公开我们的田地名片</Text><Text className="role">开启后才能发帖、留言、点赞和关注</Text></View>
           <Switch checked={enabled} color="#7457ff" onChange={(event) => setEnabled(event.detail.value)} />
         </View>
-        <Input className="field" value={bio} onInput={(event) => setBio(event.detail.value)} maxlength={80} placeholder="介绍一下你们的农场（选填）" />
+        <Input className="field" value={bio} onInput={(event) => setBio(event.detail.value)} maxlength={80} placeholder="介绍一下你们的田地（选填）" />
         <Text className="community-label">愿意公开的趣味数据（默认不公开）</Text>
         <View className="community-stat-picker">
           {statChoices.map(([key, label]) => <Button key={key} className={publicStats.includes(key) ? "active" : ""} onClick={() => toggleStat(key)}>{publicStats.includes(key) ? "✓ " : ""}{label}</Button>)}
@@ -330,8 +333,8 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
       </View>}
 
       <View className="panel community-ranking">
-        <View className="section-heading"><View><Text className="kicker">农场活力榜</Text><Text className="subtitle">一起认真生活的农场</Text></View><Text className="role">只统计自愿公开项</Text></View>
-        <View className="ranking-scroll">{data.leaderboard.map((farm, index) => <View className="ranking-card" key={farm.coupleId}><Text className="rank-number">{index + 1}</Text><View className="ranking-copy"><Text className="activity-title">{farm.farmName}</Text><Text className="role">{farm.bio || "一座安静长大的小农场"}</Text><View className="mini-stat-row">{farm.stats.slice(0, 3).map((stat) => <Text key={stat.key}>{stat.label} {stat.value}{stat.suffix}</Text>)}</View></View>{!farm.ownFarm && <Button disabled={!communityActive} onClick={() => action("toggle-community-follow", { coupleId: farm.coupleId }, farm.following ? "已取消关注" : "关注成功")}>{farm.following ? "已关注" : "+ 关注"}</Button>}</View>)}</View>
+        <View className="section-heading"><View><Text className="kicker">田地活力榜</Text><Text className="subtitle">一起认真生活的小田地</Text></View><Text className="role">只统计自愿公开项</Text></View>
+        <View className="ranking-scroll">{data.leaderboard.map((farm, index) => <View className="ranking-card" key={farm.coupleId}><Text className="rank-number">{index + 1}</Text><View className="ranking-copy"><Text className="activity-title">{farm.farmName}</Text><Text className="role">{farm.bio || "一座安静长大的小田地"}</Text><View className="mini-stat-row">{farm.stats.slice(0, 3).map((stat) => <Text key={stat.key}>{stat.label} {stat.value}{stat.suffix}</Text>)}</View></View>{!farm.ownFarm && <Button disabled={!communityActive} onClick={() => action("toggle-community-follow", { coupleId: farm.coupleId }, farm.following ? "已取消关注" : "关注成功")}>{farm.following ? "已关注" : "+ 关注"}</Button>}</View>)}</View>
       </View>
 
       <View className="community-feed-tabs"><Button className={mode === "all" ? "active" : ""} onClick={() => setMode("all")}>🌾 全村动态</Button><Button className={mode === "following" ? "active" : ""} onClick={() => setMode("following")}>💗 我的关注</Button></View>
@@ -346,7 +349,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
           <Text className="post-topic">{topicChoices.find(([key]) => key === post.topic)?.[1] || "🌱 日常"}</Text>
           <Text className="post-content">{post.content}</Text>
           {post.imageFileId && <Image className="post-image" src={post.imageFileId} mode="aspectFill" />}
-          {post.shareStat && <View className="shared-stat-card"><Text>{post.shareStat.label}</Text><Text className="shared-stat-value">{post.shareStat.value}<Text>{post.shareStat.suffix}</Text></Text><Text>由农场主人主动公开</Text></View>}
+          {post.shareStat && <View className="shared-stat-card"><Text>{post.shareStat.label}</Text><Text className="shared-stat-value">{post.shareStat.value}<Text>{post.shareStat.suffix}</Text></Text><Text>由田地主人主动公开</Text></View>}
           <View className="post-actions">
             <Button className={post.likedByViewer ? "liked" : ""} disabled={!communityActive || busy} onClick={() => action("toggle-community-like", { postId: post.id }, post.likedByViewer ? "收回小花" : "送出小花")}>{post.likedByViewer ? "🌸" : "🌼"} {post.likeCount}</Button>
             <Button disabled={!communityActive}>💬 {post.commentCount}</Button>
@@ -354,9 +357,9 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
             {!post.ownFarm && <Button onClick={() => blockFarm(post)}>屏蔽</Button>}
           </View>
           {post.comments.length > 0 && <View className="community-comments">{post.comments.map((comment) => <View className="community-comment" key={comment.id}><Avatar small avatar={comment.authorAvatar} avatarFileId={comment.authorAvatarFileId} color={comment.authorColor} /><View><Text className="comment-name">{comment.authorNickname} · {comment.farmName}</Text><Text className="comment-content">{comment.content}</Text><Text className="role">{timeAgo(comment.createdAt)}</Text></View>{comment.authorUid === viewer.uid ? <Button onClick={() => deleteContent("comment", comment.id)}>×</Button> : <Button onClick={() => report("comment", comment.id)}>···</Button>}</View>)}</View>}
-          {communityActive && <View className="comment-box"><Input value={commentDrafts[post.id] || ""} onInput={(event) => setCommentDrafts((current) => ({ ...current, [post.id]: event.detail.value }))} maxlength={120} placeholder="给这个农场留句话……" /><Button loading={busy} onClick={() => addComment(post.id)}>留言</Button></View>}
+          {communityActive && <View className="comment-box"><Input value={commentDrafts[post.id] || ""} onInput={(event) => setCommentDrafts((current) => ({ ...current, [post.id]: event.detail.value }))} maxlength={120} placeholder="给这片田地留句话……" /><Button loading={busy} onClick={() => addComment(post.id)}>留言</Button></View>}
         </View>)}
-        {!data.posts.length && <View className="panel empty">🌱 这里还没有动态，成为第一个来村口打招呼的农场吧。</View>}
+        {!data.posts.length && <View className="panel empty">🌱 这里还没有动态，成为第一个来村口打招呼的小田地吧。</View>}
       </View>
     </>
   );

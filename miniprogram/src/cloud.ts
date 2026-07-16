@@ -25,7 +25,7 @@ export async function cloudCall(
     return {
       status: 503,
       data: {
-        error: "没有连上情侣小农场，请稍后重试。",
+        error: "没有连上我们俩的小田地，请稍后重试。",
         code: cloudError.errCode ? String(cloudError.errCode) : "CLOUD_REQUEST_FAILED",
       },
     };

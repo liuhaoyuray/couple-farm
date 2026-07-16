@@ -433,7 +433,7 @@ export default function CoupleDashboard() {
   async function saveRecord() {
     const occurredAt = inputDateTimeToTimestamp(timeDraft);
     const success = modal === "weight"
-      ? await postAction({ action: "add-weight", weightKg: Number(weightDraft), occurredAt }, "体重已经种进小农场啦！")
+      ? await postAction({ action: "add-weight", weightKg: Number(weightDraft), occurredAt }, "体重已经种进小田地啦！")
       : await postAction({ action: "add-poop", occurredAt }, "粑粑时间打卡成功！");
     if (success) setModal(null);
   }
@@ -454,7 +454,7 @@ export default function CoupleDashboard() {
       <main className="access-page">
         <section className="access-card pixel-panel">
           <div className="access-heart" aria-hidden="true">♥</div>
-          <p className="eyebrow">秘密小农场</p>
+          <p className="eyebrow">秘密小田地</p>
           <h1>这里是你和伴侣的小日常</h1>
           <p>需要从属于你的专属入口进入。请让对方把那条链接重新发给你，不用注册账号。</p>
           <div className="access-farm">
@@ -470,7 +470,7 @@ export default function CoupleDashboard() {
       <main className="access-page" role="alert">
         <section className="access-card pixel-panel">
           <div className="connection-scarecrow" aria-hidden="true">🐥</div>
-          <p className="eyebrow">小农场打了个盹</p>
+          <p className="eyebrow">小田地打了个盹</p>
           <h1>这次没有连上云端</h1>
           <p>{loadError}</p>
           <button className="retry-button" type="button" onClick={() => token && loadData(token)}>
@@ -488,7 +488,7 @@ export default function CoupleDashboard() {
     return (
       <main className="loading-page" aria-live="polite">
         <div className="loading-chicken" aria-hidden="true">🐣</div>
-        <strong>正在打开你们的小农场…</strong>
+        <strong>正在打开你们的小田地…</strong>
         <span>把体重秤和小马桶都叫醒</span>
       </main>
     );
@@ -505,7 +505,7 @@ export default function CoupleDashboard() {
       <header className="topbar">
         <a className="brand" href="#top" aria-label="回到页面顶部">
           <span className="pixel-heart" aria-hidden="true">♥</span>
-          <span>情侣小农场</span>
+          <span>我们俩的小田地</span>
         </a>
 
         <div className="perspective-switch" aria-label="查看视角">
@@ -521,7 +521,7 @@ export default function CoupleDashboard() {
 
         <div className="sync-badge" title="页面会每15秒自动同步一次">
           <span className="sync-dot" />
-          <span>小农场已同步</span>
+          <span>小田地已同步</span>
         </div>
       </header>
 
@@ -694,7 +694,7 @@ export default function CoupleDashboard() {
         </section>
 
         <footer>
-          <span>♥</span> 情侣小农场 · 数据每15秒自动同步
+          <span>♥</span> 我们俩的小田地 · 数据每15秒自动同步
         </footer>
       </div>
 

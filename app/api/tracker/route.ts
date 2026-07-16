@@ -18,7 +18,7 @@ const praiseMessages = [
 ];
 
 const teaseMessages = [
-  "农场小喇叭：快来打卡啦！",
+  "田地小喇叭：快来打卡啦！",
   "体重秤和小马桶都等困了。",
   "今日份轻轻嘲讽已经送达！",
 ];
@@ -74,7 +74,7 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     console.error("tracker GET failed", error);
-    return jsonError("小农场暂时打了个盹，请稍后再刷新一次。", 500);
+    return jsonError("小田地暂时打了个盹，请稍后再刷新一次。", 500);
   }
 }
 

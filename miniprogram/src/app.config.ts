@@ -3,7 +3,7 @@ export default defineAppConfig({
   window: {
     backgroundTextStyle: "light",
     navigationBarBackgroundColor: "#fffaf0",
-    navigationBarTitleText: "情侣小农场",
+    navigationBarTitleText: "我们俩的小田地",
     navigationBarTextStyle: "black",
     backgroundColor: "#fffaf0",
   },

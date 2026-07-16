@@ -94,6 +94,12 @@ button::after { border: 0; }
 .reminder-icon { font-size: 39rpx; }
 .reminder-card > view { flex: 1; }
 .chevron { color: $violet-dark; font-size: 48rpx; font-weight: 900; }
+.today-board { border-color: #d5c7ff; background: linear-gradient(145deg, #fff, #f8f4ff); }
+.board-count { display: flex; align-items: center; justify-content: center; min-width: 62rpx; height: 62rpx; border-radius: 18rpx; background: $yellow; color: #624900; font-size: 27rpx; font-weight: 900; }
+.board-row { display: flex; align-items: center; gap: 14rpx; padding: 17rpx 0; border-top: 2rpx dashed $line; }
+.board-row > text:first-child { font-size: 34rpx; }
+.board-row > view { flex: 1; min-width: 0; }
+.compact-empty { display: block; padding: 25rpx 4rpx 5rpx; }
 
 .milestone-grid, .people-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 17rpx; margin-top: 24rpx; }
 .milestone-card { min-height: 145rpx; padding: 20rpx; border: 4rpx solid #e1d6bd; border-radius: 25rpx; background: #fff4c7; box-shadow: 0 7rpx 0 rgba(91,68,20,.1); }
@@ -114,6 +120,11 @@ button::after { border: 0; }
 .task-row { display: flex; gap: 12rpx; margin-top: 16rpx; }
 .task { flex: 1; padding: 13rpx 9rpx; border-radius: 14rpx; background: #f1edf7; color: $muted; font-size: 22rpx; font-weight: 800; text-align: center; }
 .task.done { background: #def5e7; color: #17663d; }
+.farm-shortcuts { display: grid; grid-template-columns: 1fr 1fr; gap: 14rpx; margin-top: 24rpx; }
+.farm-shortcuts button { display: grid; grid-template-columns: 46rpx 1fr 20rpx; align-items: center; gap: 9rpx; min-height: 112rpx; margin: 0; padding: 15rpx; border: 4rpx solid $line; border-radius: 22rpx; background: #fff; box-shadow: 0 6rpx 0 rgba(58,44,89,.1); text-align: left; line-height: 1.25; }
+.farm-shortcuts button > text:first-child { font-size: 34rpx; }
+.farm-shortcuts button > view { min-width: 0; }
+.farm-shortcuts .chevron { font-size: 32rpx; }
 
 .date-row { display: grid; grid-template-columns: 1.25fr .75fr; gap: 12rpx; margin-top: 20rpx; }
 .weight-row { display: grid; grid-template-columns: 1fr 190rpx; align-items: end; gap: 12rpx; margin-top: 14rpx; }
@@ -174,6 +185,9 @@ button::after { border: 0; }
 
 .community-heading { padding-top: 8rpx; }
 .community-loading { padding: 70rpx 24rpx; color: $muted; font-size: 27rpx; font-weight: 800; text-align: center; }
+.community-service-note { display: flex; align-items: center; gap: 16rpx; margin-top: 18rpx; padding: 18rpx 20rpx; border: 3rpx solid #e4c651; border-radius: 20rpx; background: #fff9d9; color: #6f5500; font-size: 22rpx; font-weight: 800; line-height: 1.55; }
+.community-service-note text { flex: 1; }
+.community-service-note button { flex: 0 0 auto; min-height: 54rpx; margin: 0; padding: 0 16rpx; border-radius: 14rpx; background: #fff; color: #6f5500; font-size: 20rpx; font-weight: 900; line-height: 50rpx; }
 .community-settings { border-color: #c9bbf7; background: linear-gradient(180deg, #fff, #faf8ff); }
 .community-label { display: block; margin: 20rpx 0 12rpx; color: $muted; font-size: 22rpx; font-weight: 900; }
 .community-stat-picker, .community-topic-picker { display: flex; flex-wrap: wrap; gap: 10rpx; }
@@ -298,6 +312,40 @@ button::after { border: 0; }
 .price-row > text { padding: 15rpx; border: 3rpx solid #e0d3a4; border-radius: 16rpx; background: rgba(255,255,255,.75); color: $muted; font-size: 20rpx; font-weight: 800; text-align: center; }
 .price-row > text > text { color: $violet-dark; font-size: 31rpx; font-weight: 900; }
 .membership-expiry, .waitlist-done { display: block; margin-top: 17rpx; padding: 14rpx; border-radius: 13rpx; background: #e5f7eb; color: #17663d; font-size: 21rpx; font-weight: 850; text-align: center; }
+
+.notebook-heading { padding-top: 8rpx; }
+.notebook-loading { padding: 100rpx 24rpx; color: $muted; font-size: 27rpx; font-weight: 900; text-align: center; }
+.notebook-error { border-color: #ef8ba6; background: #fff9fb; }
+.memo-form { border-color: #d5c7ff; background: linear-gradient(180deg, #fff, #fbf9ff); }
+.memo-kind-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10rpx; margin-top: 20rpx; }
+.memo-kind-row button { min-height: 70rpx; margin: 0; padding: 0 8rpx; border: 3rpx solid $line; border-radius: 17rpx; background: #f6f2fb; color: $muted; font-size: 23rpx; font-weight: 900; line-height: 64rpx; }
+.memo-kind-row button.active { border-color: $violet; background: #e9e2ff; color: $violet-dark; box-shadow: 0 4rpx 0 rgba(73,48,189,.14); }
+.memo-category-row { display: flex; flex-wrap: wrap; gap: 9rpx; margin-top: 17rpx; }
+.memo-category-row button { min-height: 55rpx; margin: 0; padding: 0 15rpx; border: 3rpx solid $line; border-radius: 14rpx; background: #f8f6fb; color: $muted; font-size: 20rpx; font-weight: 850; line-height: 49rpx; }
+.memo-category-row button.active { border-color: $pink; background: #fff0f5; color: #972a4e; }
+.memo-time-switch { padding-top: 6rpx; border-top: 2rpx dashed $line; }
+.subscription-card { display: grid; grid-template-columns: 1fr 190rpx; align-items: center; gap: 15rpx; border-color: #e2cb70; background: linear-gradient(135deg, #fffbea, #fff5d3); }
+.subscription-card button { min-height: 72rpx; margin: 0; padding: 0 12rpx; font-size: 21rpx; line-height: 64rpx; }
+.memo-list-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 9rpx; margin-top: 26rpx; padding: 7rpx; border-radius: 20rpx; background: #ece7f4; }
+.memo-list-tabs button { min-height: 64rpx; margin: 0; border-radius: 15rpx; background: transparent; color: $muted; font-size: 22rpx; font-weight: 900; line-height: 60rpx; }
+.memo-list-tabs button.active { background: #fff; color: $violet-dark; box-shadow: 0 4rpx 0 rgba(58,44,89,.12); }
+.memo-list { margin-top: 14rpx; }
+.memo-card { display: flex; align-items: flex-start; gap: 15rpx; margin-top: 15rpx; padding: 22rpx; border: 4rpx solid $line; border-radius: 24rpx; background: #fff; box-shadow: 0 6rpx 0 rgba(58,44,89,.1); }
+.memo-card.completed { opacity: .78; background: #f5f7f4; }
+.memo-icon { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 64rpx; height: 64rpx; border-radius: 18rpx; background: #eee9ff; font-size: 34rpx; }
+.memo-copy { flex: 1; min-width: 0; }
+.memo-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10rpx; }
+.memo-title-row .activity-title { flex: 1; }
+.memo-category { flex: 0 0 auto; padding: 5rpx 9rpx; border-radius: 9rpx; background: #fff3c4; color: #745500; font-size: 17rpx; font-weight: 900; }
+.memo-category.date { background: #fff0f5; color: #972a4e; }
+.memo-category.important { background: #ffe7e7; color: #9e2424; }
+.memo-note { display: block; margin: 9rpx 0; color: #51475f; font-size: 23rpx; line-height: 1.55; white-space: pre-wrap; }
+.memo-waiting { display: block; margin-top: 9rpx; color: #17663d; font-size: 20rpx; font-weight: 850; }
+.memo-actions { display: flex; flex-wrap: wrap; gap: 8rpx; margin-top: 14rpx; }
+.memo-actions button { min-height: 53rpx; margin: 0; padding: 0 13rpx; border-radius: 13rpx; background: #efeaff; color: $violet-dark; font-size: 19rpx; font-weight: 850; line-height: 49rpx; }
+.memo-actions button.primary-mini { background: $violet; color: #fff; }
+.memo-actions button.done { background: #def5e7; color: #17663d; }
+.memo-actions button.danger-mini { background: #fff0f5; color: #a62d52; }
 
 .settings-picker { margin-top: 14rpx; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; margin-top: 20rpx; }
