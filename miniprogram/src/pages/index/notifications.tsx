@@ -39,10 +39,10 @@ type NotificationCenterData = {
 };
 
 const eventGroups: Array<{ key: NotificationEventGroup; icon: string; title: string; detail: string }> = [
-  { key: "health", icon: "🌱", title: "健康打卡", detail: "称重与如厕记录" },
+  { key: "health", icon: "🌱", title: "健康打卡与定时提醒", detail: "称重、如厕记录和每日到点提醒" },
   { key: "interaction", icon: "💗", title: "点赞与催促", detail: "红心、抱抱和轻提醒" },
   { key: "tasks", icon: "✅", title: "共同事项", detail: "待办、日程和共同决定" },
-  { key: "rituals", icon: "🌤️", title: "每日默契", detail: "心情打卡与默契题" },
+  { key: "rituals", icon: "🌤️", title: "每日默契与纪念日", detail: "心情、心动任务和重要日子" },
   { key: "village", icon: "🌾", title: "村庄互动", detail: "村庄里的回应与留言" },
 ];
 
@@ -160,13 +160,13 @@ export default function NotificationsPanel({
   return (
     <>
       <View className="page-heading notification-heading">
-        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
-        <Text className="title">情侣消息盒子</Text>
-        <Text className="description">每一次打卡、回应和共同完成，都不会悄悄溜走。</Text>
+        <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
+        <Text className="title">消息与提醒中心</Text>
+        <Text className="description">伴侣动态、每日健康提醒、纪念日和村庄互动都集中在这里。</Text>
       </View>
 
       <View className="panel notification-quota-card">
-        <View className="notification-quota-copy"><Text className="kicker">微信伴侣动态提醒</Text><Text className="subtitle">已存 {data?.notification.availableQuota || 0} 次</Text><Text className="description small">微信规定每次授权只能发送一次。提前存入后，伴侣下一次打卡、点赞或催促就能在微信里提醒你；没有次数时仍会进入站内消息盒子。</Text></View>
+        <View className="notification-quota-copy"><Text className="kicker">微信订阅提醒</Text><Text className="subtitle">已存 {data?.notification.availableQuota || 0} 次</Text><Text className="description small">微信规定每次授权只能发送一次。提醒次数会用于伴侣打卡、点赞、每日称重/如厕提醒或纪念日；没有次数时仍会保留站内消息。</Text></View>
         <Button className="primary" onClick={requestWechatReminder}>＋ 存 1 次提醒</Button>
       </View>
 

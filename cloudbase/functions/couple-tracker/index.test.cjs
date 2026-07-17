@@ -171,7 +171,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.7.0");
+  assert.equal(result.data.version, "0.8.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -179,7 +179,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.7.0");
+  assert.equal(result.data.version, "0.8.0");
 });
 
 test("verifies the private village schema without a user session", async () => {
@@ -187,7 +187,7 @@ test("verifies the private village schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "village");
-  assert.equal(result.data.version, "0.7.0");
+  assert.equal(result.data.version, "0.8.0");
 });
 
 test("verifies the partner notification schema without a user session", async () => {
@@ -195,8 +195,19 @@ test("verifies the partner notification schema without a user session", async ()
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "notifications");
-  assert.equal(result.data.version, "0.7.0");
+  assert.equal(result.data.version, "0.8.0");
   assert.equal(result.data.templateConfigured, true);
+});
+
+test("verifies the full UGC content-safety contract without a user session", async () => {
+  const result = await invoke(null, "content-safety-health");
+  assert.equal(result.status, 200);
+  assert.equal(result.data.service, "content-safety");
+  assert.equal(result.data.version, "0.8.0");
+  assert.deepEqual(result.data.apis, ["security.msgSecCheck", "security.imgSecCheck"]);
+  assert.ok(result.data.coverage.includes("avatar-image"));
+  assert.ok(result.data.coverage.includes("village-post-image-text"));
+  assert.equal(result.data.rejectMessage, "你发布的内容含违规信息。");
 });
 
 test("requires a CloudBase platform identity", async () => {
@@ -264,6 +275,72 @@ test("automatically creates a mini-program profile from verified OpenID", async 
   assert.equal(mini.data.viewer.profileComplete, false);
 });
 
+test("moderates mini-program nicknames and uploaded images before publication", async () => {
+  const caller = { uid: "platform-safety-user", openId: "openid-safety", appId: "wx-app" };
+  const bootstrap = await invoke(caller, "bootstrap", {}, undefined, "mini");
+  const uid = bootstrap.data.viewer.uid;
+
+  textSafetyResponse = { result: { suggest: "risky" } };
+  const unsafeNickname = await invoke(caller, "update-profile", {
+    nickname: "违规昵称",
+    avatar: "🐣",
+  }, undefined, "mini");
+  assert.equal(unsafeNickname.status, 422);
+  assert.equal(unsafeNickname.data.code, "CONTENT_UNSAFE");
+  assert.equal(unsafeNickname.data.error, "你发布的内容含违规信息。");
+  textSafetyResponse = { result: { suggest: "pass" } };
+
+  imageSafetyResponse = { result: { suggest: "risky" } };
+  const unsafeImage = await invoke(caller, "moderate-upload", {
+    kind: "avatar",
+    fileId: `cloud://test.bucket/avatars/${uid}/unsafe.jpg`,
+  }, undefined, "mini");
+  assert.equal(unsafeImage.status, 422);
+  assert.equal(unsafeImage.data.code, "IMAGE_UNSAFE");
+  assert.equal(unsafeImage.data.error, "你发布的内容含违规信息。");
+  imageSafetyResponse = { result: { suggest: "pass" } };
+
+  const safeImage = await invoke(caller, "moderate-upload", {
+    kind: "avatar",
+    fileId: `cloud://test.bucket/avatars/${uid}/safe.jpg`,
+  }, undefined, "mini");
+  assert.equal(safeImage.status, 200);
+  assert.equal(safeImage.data.status, "pass");
+});
+
+test("dispatches scheduled health reminders for an unpaired user", async () => {
+  const caller = { uid: "platform-reminder-user", openId: "openid-reminder", appId: "wx-app" };
+  await invoke(caller, "bootstrap", {}, undefined, "mini");
+  await invoke(caller, "update-profile", { nickname: "提醒测试", avatar: "🐰" }, undefined, "mini");
+  const china = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const time = `${String(china.getUTCHours()).padStart(2, "0")}:${String(china.getUTCMinutes()).padStart(2, "0")}`;
+  await invoke(caller, "update-reminders", {
+    weight: { enabled: true, time, days: [0, 1, 2, 3, 4, 5, 6] },
+    poop: { enabled: false, time: "20:30", days: [0, 1, 2, 3, 4, 5, 6] },
+    anniversary: { enabled: false, advanceDays: [7, 1, 0] },
+  }, undefined, "mini");
+  await invoke(caller, "update-notification-preferences", {
+    inApp: true,
+    wechat: true,
+    quietHours: { enabled: false, start: "23:00", end: "08:00" },
+    events: { health: true, interaction: true, tasks: true, rituals: true, village: true },
+  }, undefined, "mini");
+  const grant = await invoke(caller, "save-subscription-consent", {
+    templateKey: "health_reminder",
+    templateId: memoTemplateId,
+    result: "accept",
+  }, undefined, "mini");
+  assert.equal(grant.status, 201);
+  const sentBefore = sentSubscriptionMessages.length;
+  const sweep = await main({ Type: "Timer", triggerName: "couple-reminders" });
+  assert.equal(sweep.status, 200);
+  assert.ok(sweep.data.scheduled.created >= 1);
+  assert.equal(sentSubscriptionMessages.length, sentBefore + 1);
+  const center = await invoke(caller, "notification-center", {}, undefined, "mini");
+  assert.equal(center.status, 200);
+  assert.ok(center.data.items.some((item) => item.type === "health_reminder"));
+});
+
 test("creates profiles and securely pairs two different accounts", async () => {
   const first = await invoke("browser-a", "bootstrap", {}, firstToken);
   assert.equal(first.status, 200);
@@ -300,6 +377,15 @@ test("creates profiles and securely pairs two different accounts", async () => {
   assert.ok(paired.data.couple.id.startsWith("couple_"));
   assert.equal(paired.data.weights.some((entry) => entry.id === soloWeight.data.entry.id), true);
   assert.equal(paired.data.poops.some((entry) => entry.id === soloPoop.data.entry.id), true);
+  assert.ok(paired.data.dailySpark);
+  assert.equal(paired.data.dailySpark.completedByUids.length, 0);
+
+  const firstSpark = await invoke("browser-a", "complete-daily-spark", {}, firstToken);
+  assert.equal(firstSpark.status, 200);
+  assert.equal(firstSpark.data.spark.bothCompleted, false);
+  const secondSpark = await invoke("browser-b", "complete-daily-spark", {}, secondToken);
+  assert.equal(secondSpark.status, 200);
+  assert.equal(secondSpark.data.spark.bothCompleted, true);
 
   await invoke("browser-a", "delete-weight", { id: soloWeight.data.entry.id }, firstToken);
   await invoke("browser-b", "delete-poop", { id: soloPoop.data.entry.id }, secondToken);

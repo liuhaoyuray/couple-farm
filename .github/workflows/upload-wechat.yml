@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号，例如 0.7.0"
+        description: "版本号，例如 0.8.0"
         required: false
-        default: "0.7.0"
+        default: "0.8.0"
       description:
         description: "版本说明"
         required: false
-        default: "我们俩的小田地 0.7.0 情侣消息与微信动态提醒"
+        default: "0.8.0 图片修复、定时提醒与心动任务"
   push:
     branches: [main]
     paths:
@@ -64,8 +64,8 @@ jobs:
       - name: 上传开发版本
         env:
           WECHAT_UPLOAD_PRIVATE_KEY_PATH: ${{ runner.temp }}/wechat-upload.key
-          WECHAT_VERSION: ${{ github.event.inputs.version || '0.7.0' }}
-          WECHAT_DESC: ${{ github.event.inputs.description || '我们俩的小田地 0.7.0：情侣消息、微信动态提醒与本周默契报告' }}
+          WECHAT_VERSION: ${{ github.event.inputs.version || '0.8.0' }}
+          WECHAT_DESC: ${{ github.event.inputs.description || '0.8.0：图片修复、定时提醒与心动任务' }}
         run: npm --prefix miniprogram run upload:weapp
 
       - name: 删除临时私钥

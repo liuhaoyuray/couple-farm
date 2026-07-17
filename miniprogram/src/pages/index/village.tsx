@@ -1,8 +1,8 @@
-import { Button, Image, Input, Text, Textarea, View } from "@tarojs/components";
+import { Button, Input, Text, Textarea, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
-/* eslint-disable jsx-a11y/alt-text -- Taro Image does not expose the HTML alt prop. */
 import { useCallback, useEffect, useState } from "react";
 import { cloudCall } from "../../cloud";
+import CloudImage from "../../cloud-image";
 import { deleteCloudFileQuietly, imageUploadErrorMessage, prepareImageForUpload } from "../../media";
 
 type Viewer = {
@@ -106,7 +106,7 @@ function Avatar({ person, small = false }: { person: Viewer; small?: boolean }) 
   return (
     <View className={small ? "community-avatar small" : "community-avatar"} style={{ background: person.color }}>
       {person.avatarFileId
-        ? <Image className="community-avatar-image" src={person.avatarFileId} mode="aspectFill" />
+        ? <CloudImage className="community-avatar-image" fileId={person.avatarFileId} fallback={person.avatar} />
         : <Text>{person.avatar}</Text>}
     </View>
   );
@@ -215,6 +215,11 @@ export default function VillagePanel({ viewer, couple }: { viewer: Viewer; coupl
         cloudPath: `community/${viewer.uid}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`,
         filePath,
       });
+      const moderation = await cloudCall("moderate-upload", { fileId: uploaded.fileID, kind: "community" });
+      if (moderation.status !== 200) {
+        await deleteCloudFileQuietly(uploaded.fileID);
+        throw new Error(String(moderation.data.error || "图片安全检查暂时没有响应，请稍后再试。"));
+      }
       const previous = postImageFileId;
       setPostImageFileId(uploaded.fileID);
       await deleteCloudFileQuietly(previous);
@@ -281,7 +286,7 @@ export default function VillagePanel({ viewer, couple }: { viewer: Viewer; coupl
     return (
       <>
         <View className="page-heading community-heading">
-          <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
+          <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
           <Text className="title">和认识的情侣住进同一个村</Text>
           <Text className="description">村庄不是公开广场。只有拿到邀请码的情侣才能加入、看动态和留言，体重与如厕记录永远不会进入村庄。</Text>
         </View>
@@ -342,7 +347,7 @@ export default function VillagePanel({ viewer, couple }: { viewer: Viewer; coupl
         <View className="community-author-row"><Avatar person={viewer} /><View><Text className="activity-title">{couple.farmName}</Text><Text className="role">由 {viewer.nickname} 分享给村民</Text></View></View>
         <View className="community-topic-picker">{topicChoices.map(([key, label]) => <Button key={key} className={topic === key ? "active" : ""} onClick={() => setTopic(key)}>{label}</Button>)}</View>
         <Textarea className="textarea community-textarea" value={draft} onInput={(event) => setDraft(event.detail.value)} maxlength={300} placeholder="分享日常、约饭、问问题，只有村民能看到……" />
-        {postImageFileId && <View className="community-image-preview"><Image src={postImageFileId} mode="aspectFill" /><Button onClick={async () => { const fileId = postImageFileId; setPostImageFileId(null); await deleteCloudFileQuietly(fileId); }}>移除</Button></View>}
+        {postImageFileId && <View className="community-image-preview"><CloudImage fileId={postImageFileId} fallback="照片" /><Button onClick={async () => { const fileId = postImageFileId; setPostImageFileId(null); await deleteCloudFileQuietly(fileId); }}>移除</Button></View>}
         <View className="composer-tools"><Button onClick={choosePostImage}>📷 {postImageFileId ? "换照片" : "加一张照片"}</Button><Text>{draft.length}/300</Text></View>
         <Button className="primary" loading={busy} onClick={publishPost}>分享给村民</Button>
       </View>
@@ -352,7 +357,7 @@ export default function VillagePanel({ viewer, couple }: { viewer: Viewer; coupl
           <View className="post-head"><Avatar person={{ uid: post.authorUid, nickname: post.authorNickname, avatar: post.authorAvatar, avatarFileId: post.authorAvatarFileId, color: post.authorColor }} /><View><Text className="activity-title">{post.farmName}</Text><Text className="role">{post.authorNickname} · {timeAgo(post.createdAt)}</Text></View></View>
           <Text className="post-topic">{topicChoices.find(([key]) => key === post.topic)?.[1] || "🌱 日常"}</Text>
           <Text className="post-content">{post.content}</Text>
-          {post.imageFileId && <Image className="post-image" src={post.imageFileId} mode="aspectFill" />}
+          {post.imageFileId && <CloudImage className="post-image" fileId={post.imageFileId} fallback="照片正在加载" />}
           <View className="post-actions"><Button className={post.likedByViewer ? "liked" : ""} disabled={busy} onClick={() => action("toggle-village-like", { postId: post.id }, post.likedByViewer ? "收回小花" : "送出小花")}>{post.likedByViewer ? "🌸" : "🌼"} {post.likeCount}</Button><Button disabled>💬 {post.commentCount}</Button>{post.ownCouple ? <Button onClick={() => deleteContent("post", post.id)}>删除</Button> : <Button onClick={() => reportContent("post", post.id)}>举报</Button>}</View>
           {post.comments.length > 0 && <View className="community-comments">{post.comments.map((comment) => <View className="community-comment" key={comment.id}><Avatar small person={{ uid: comment.authorUid, nickname: comment.authorNickname, avatar: comment.authorAvatar, avatarFileId: comment.authorAvatarFileId, color: comment.authorColor }} /><View><Text className="comment-name">{comment.authorNickname} · {comment.farmName}</Text><Text className="comment-content">{comment.content}</Text><Text className="role">{timeAgo(comment.createdAt)}</Text></View>{comment.authorUid === viewer.uid ? <Button onClick={() => deleteContent("comment", comment.id)}>×</Button> : <Button onClick={() => reportContent("comment", comment.id)}>···</Button>}</View>)}</View>}
           <View className="comment-box"><Input value={commentDrafts[post.id] || ""} onInput={(event) => setCommentDrafts((current) => ({ ...current, [post.id]: event.detail.value }))} maxlength={120} placeholder="给村民留句话……" /><Button loading={busy} onClick={() => addComment(post.id)}>留言</Button></View>

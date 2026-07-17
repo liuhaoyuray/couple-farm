@@ -38,6 +38,8 @@ const COLLECTIONS = [
   "notification_subscriptions",
   "notification_deliveries",
   "in_app_notifications",
+  "content_moderations",
+  "daily_sparks",
   "villages",
   "village_members",
   "village_invites",
@@ -90,6 +92,8 @@ const notificationPreferenceKeys = ["health", "interaction", "tasks", "rituals",
 const notificationPreferenceByType = {
   weight: "health",
   poop: "health",
+  health_reminder: "health",
+  anniversary_reminder: "rituals",
   reaction: "interaction",
   nudge: "interaction",
   memo_created: "tasks",
@@ -98,9 +102,24 @@ const notificationPreferenceByType = {
   decision_resolved: "tasks",
   mood_checkin: "rituals",
   daily_answer: "rituals",
+  spark_completed: "rituals",
   village_like: "village",
   village_comment: "village",
 };
+const dailySparkPrompts = [
+  { icon: "💬", title: "认真夸对方一句", detail: "不要只说好看，夸一件今天具体的小事。" },
+  { icon: "📷", title: "交换今天的一张照片", detail: "天空、晚饭或路边的小花都可以。" },
+  { icon: "🤗", title: "送出一个 20 秒抱抱", detail: "如果不在身边，就发一条认真想念的信息。" },
+  { icon: "🚶", title: "一起散步 10 分钟", detail: "边走边聊，十分钟里先不看手机。" },
+  { icon: "🎵", title: "分享一首今天的歌", detail: "告诉对方，哪一句最像你此刻的心情。" },
+  { icon: "🍜", title: "一起决定下一顿吃什么", detail: "各提一个候选，再用“相伴”里的抽签决定。" },
+  { icon: "🫶", title: "问一句“今天累不累”", detail: "先听完，不急着替对方解决问题。" },
+  { icon: "✨", title: "回忆一个共同的瞬间", detail: "说说当时你最喜欢对方的哪个细节。" },
+  { icon: "🧹", title: "替对方完成一件小事", detail: "收拾桌面、带杯水，越小越容易坚持。" },
+  { icon: "🌙", title: "约好今晚的睡觉时间", detail: "互相催促早点休息，明天精神更好。" },
+  { icon: "📝", title: "写下一件共同期待", detail: "放进小本本，给未来的约会留个位置。" },
+  { icon: "😄", title: "讲一件今天的好笑小事", detail: "让对方知道你今天经历了什么。" },
+];
 const defaultNotificationPreferences = {
   inApp: true,
   wechat: true,
@@ -388,7 +407,7 @@ async function checkTextSafety(content, requestContext) {
     });
     const status = contentCheckStatus(result);
     if (status === "reject") {
-      return jsonError("这段内容没有通过社区安全检查，请换一种说法。", 422, "CONTENT_UNSAFE");
+      return jsonError("你发布的内容含违规信息。", 422, "CONTENT_UNSAFE");
     }
     if (status !== "pass") return jsonError("内容安全检查暂时没有响应，请稍后再试。", 503, "CONTENT_CHECK_UNAVAILABLE");
     return null;
@@ -424,7 +443,7 @@ async function checkImageSafety(fileId, requestContext) {
     });
     const status = contentCheckStatus(result, true);
     if (status === "reject") {
-      return jsonError("这张图片没有通过社区安全检查，请换一张。", 422, "IMAGE_UNSAFE");
+      return jsonError("你发布的内容含违规信息。", 422, "IMAGE_UNSAFE");
     }
     if (status !== "pass") return jsonError("图片安全检查暂时没有响应，请稍后再试。", 503, "IMAGE_CHECK_UNAVAILABLE");
     return null;
@@ -446,6 +465,65 @@ async function removeUploadedFile(fileId) {
 function shouldDiscardRejectedImage(result) {
   const code = result && result.data && result.data.code;
   return ["IMAGE_UNSAFE", "IMAGE_TOO_LARGE", "IMAGE_FORMAT_INVALID"].includes(code);
+}
+
+async function checkMiniPublishedText(content, requestContext) {
+  const normalized = cleanCommunityText(content, 500);
+  if (!normalized || requestContext?.channel !== "mini") return null;
+  return checkTextSafety(normalized, requestContext);
+}
+
+function moderationDocumentId(fileId) {
+  return `moderation_${sha256(fileId).slice(0, 48)}`;
+}
+
+async function ensureImageModerated(user, fileId, kind, requestContext) {
+  const id = moderationDocumentId(fileId);
+  const existing = await getDocument("content_moderations", id);
+  if (
+    existing
+    && existing.ownerUid === user.uid
+    && existing.fileId === fileId
+    && existing.status === "pass"
+  ) return null;
+
+  const imageError = await checkImageSafety(fileId, requestContext);
+  if (imageError) {
+    if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(fileId);
+    await setDocument("content_moderations", id, {
+      ownerUid: user.uid,
+      fileId,
+      kind: cleanText(kind, 24),
+      status: imageError.data?.code === "IMAGE_UNSAFE" ? "reject" : "error",
+      resultCode: cleanText(imageError.data?.code, 48),
+      scannedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return imageError;
+  }
+
+  const now = Date.now();
+  await setDocument("content_moderations", id, {
+    ownerUid: user.uid,
+    fileId,
+    kind: cleanText(kind, 24),
+    status: "pass",
+    scannedAt: now,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  return null;
+}
+
+async function moderateUpload(user, payload, requestContext) {
+  const kind = payload.kind === "avatar" ? "avatar" : payload.kind === "community" ? "community" : null;
+  if (!kind) return jsonError("没有认出图片使用场景。", 400, "MODERATION_KIND_INVALID");
+  const root = kind === "avatar" ? "avatars" : "community";
+  const fileId = normalizeAvatarFileId(payload.fileId, user.uid, root);
+  if (!fileId) return jsonError("图片文件地址不正确，请重新选择。", 400, "IMAGE_FILE_INVALID");
+  const safetyError = await ensureImageModerated(user, fileId, kind, requestContext);
+  if (safetyError) return safetyError;
+  return response(200, { ok: true, status: "pass", fileId });
 }
 
 function currentCommunityPrompt(now = Date.now()) {
@@ -901,9 +979,10 @@ async function migrateSoloRecords(uid, coupleId) {
 async function readSoloDashboard(user) {
   const now = Date.now();
   const spaceId = soloSpaceId(user.uid);
-  const [allWeights, allPoops] = await Promise.all([
+  const [allWeights, allPoops, notificationSummaryData] = await Promise.all([
     queryAll("weight_entries", { ownerUid: user.uid }, [], 500),
     queryAll("poop_entries", { ownerUid: user.uid }, [], 500),
+    notificationSummary(user),
   ]);
   const weights = allWeights
     .filter((item) => item.coupleId === spaceId && item.recordedAt >= now - 190 * DAY)
@@ -921,7 +1000,7 @@ async function readSoloDashboard(user) {
     reactions: [],
     anniversaries: [],
     sharedMemos: [],
-    notificationSummary: { unreadCount: 0, availableQuota: 0 },
+    notificationSummary: notificationSummaryData,
     serverTime: now,
   });
 }
@@ -942,7 +1021,7 @@ async function readDashboard(user) {
     migrateSoloRecords(partner.uid, couple.id),
   ]);
   const now = Date.now();
-  const [weights, poops, reactions, anniversaries, sharedMemoDocuments, notificationSummaryData] = await Promise.all([
+  const [weights, poops, reactions, anniversaries, sharedMemoDocuments, notificationSummaryData, dailySpark] = await Promise.all([
     queryAll(
       "weight_entries",
       { coupleId: couple.id, recordedAt: command.gte(now - 190 * DAY) },
@@ -969,6 +1048,7 @@ async function readDashboard(user) {
     ),
     queryAll("shared_memos", { coupleId: couple.id }, [], 120),
     notificationSummary(user, couple.id),
+    readDailySpark(couple, now),
   ]);
 
   const sharedMemos = sharedMemoDocuments
@@ -992,6 +1072,7 @@ async function readDashboard(user) {
     anniversaries,
     sharedMemos,
     weeklyPulse: weeklyCouplePulse(couple, weights, poops, reactions, sharedMemoDocuments, now),
+    dailySpark,
     notificationSummary: notificationSummaryData,
     serverTime: now,
   });
@@ -1016,6 +1097,8 @@ async function updateProfile(user, payload, requestContext) {
   if (nickname.length < 1) return jsonError("昵称至少需要一个字。", 400, "NICKNAME_REQUIRED");
   if (!avatarChoices.includes(avatar)) return jsonError("请选择田地里提供的头像。", 400, "AVATAR_INVALID");
   if (color && !colorChoices.includes(color)) return jsonError("请选择田地里提供的代表色。", 400, "COLOR_INVALID");
+  const nicknameSafetyError = await checkMiniPublishedText(nickname, requestContext);
+  if (nicknameSafetyError) return nicknameSafetyError;
 
   const fields = {
     nickname,
@@ -1028,11 +1111,8 @@ async function updateProfile(user, payload, requestContext) {
     const avatarFileId = normalizeAvatarFileId(payload.avatarFileId, user.uid);
     if (avatarFileId === undefined) return jsonError("头像文件地址不正确，请重新选择。", 400, "AVATAR_FILE_INVALID");
     if (avatarFileId && avatarFileId !== user.avatarFileId) {
-      const imageError = await checkImageSafety(avatarFileId, requestContext);
-      if (imageError) {
-        if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(avatarFileId);
-        return imageError;
-      }
+      const imageError = await ensureImageModerated(user, avatarFileId, "avatar", requestContext);
+      if (imageError) return imageError;
     }
     fields.avatarFileId = avatarFileId;
   }
@@ -1040,7 +1120,7 @@ async function updateProfile(user, payload, requestContext) {
   return response(200, { viewer: publicUser(updated, true) });
 }
 
-async function updateCoupleSettings(user, payload) {
+async function updateCoupleSettings(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const fields = { updatedAt: Date.now(), updatedBy: user.uid };
@@ -1048,6 +1128,8 @@ async function updateCoupleSettings(user, payload) {
   if (Object.prototype.hasOwnProperty.call(payload, "farmName")) {
     const farmName = cleanText(payload.farmName, 16);
     if (farmName.length < 2) return jsonError("田地名称至少需要两个字。", 400, "FARM_NAME_INVALID");
+    const safetyError = await checkMiniPublishedText(farmName, requestContext);
+    if (safetyError) return safetyError;
     fields.farmName = farmName;
   }
 
@@ -1089,11 +1171,13 @@ function anniversaryFields(payload) {
   };
 }
 
-async function addAnniversary(user, payload) {
+async function addAnniversary(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const fields = anniversaryFields(payload);
   if (fields.error) return fields.error;
+  const safetyError = await checkMiniPublishedText(`${fields.title}\n${fields.note}`, requestContext);
+  if (safetyError) return safetyError;
   const now = Date.now();
   const anniversary = await addDocument("anniversaries", {
     coupleId: relationship.couple.id,
@@ -1106,7 +1190,7 @@ async function addAnniversary(user, payload) {
   return response(201, { anniversary });
 }
 
-async function updateAnniversary(user, payload) {
+async function updateAnniversary(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const id = cleanText(payload.id, 128);
@@ -1116,6 +1200,8 @@ async function updateAnniversary(user, payload) {
   }
   const fields = anniversaryFields({ ...current, ...payload });
   if (fields.error) return fields.error;
+  const safetyError = await checkMiniPublishedText(`${fields.title}\n${fields.note}`, requestContext);
+  if (safetyError) return safetyError;
   const anniversary = await updateDocument("anniversaries", id, {
     ...fields,
     updatedBy: user.uid,
@@ -1231,11 +1317,13 @@ async function sharedNotebook(user) {
   });
 }
 
-async function createSharedMemo(user, payload) {
+async function createSharedMemo(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const fields = sharedMemoFields(payload, relationship.couple);
   if (fields.error) return fields.error;
+  const safetyError = await checkMiniPublishedText(`${fields.title}\n${fields.note}\n${fields.location}`, requestContext);
+  if (safetyError) return safetyError;
   const now = Date.now();
   const memo = await addDocument("shared_memos", {
     coupleId: relationship.couple.id,
@@ -1260,7 +1348,7 @@ async function createSharedMemo(user, payload) {
   return response(201, { item: publicSharedMemo(memo, relationship.couple) });
 }
 
-async function updateSharedMemo(user, payload) {
+async function updateSharedMemo(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const id = cleanText(payload.id, 128);
@@ -1271,6 +1359,8 @@ async function updateSharedMemo(user, payload) {
   if (current.status === "completed") return jsonError("已完成的事项不能直接修改，请新建一条。", 409, "MEMO_COMPLETED");
   const fields = sharedMemoFields(payload, relationship.couple, current);
   if (fields.error) return fields.error;
+  const safetyError = await checkMiniPublishedText(`${fields.title}\n${fields.note}\n${fields.location}`, requestContext);
+  if (safetyError) return safetyError;
   const updated = await updateDocument("shared_memos", id, {
     ...fields,
     updatedBy: user.uid,
@@ -1373,7 +1463,7 @@ async function saveSubscriptionConsent(user, payload, requestContext) {
   if (!notificationTemplateKeys.includes(templateKey) || !templateId) {
     return jsonError("订阅消息模板不正确。", 400, "SUBSCRIPTION_TEMPLATE_INVALID");
   }
-  if (["shared_memo", "partner_activity"].includes(templateKey) && templateId !== WECHAT_MEMO_TEMPLATE_ID) {
+  if (notificationTemplateKeys.includes(templateKey) && templateId !== WECHAT_MEMO_TEMPLATE_ID) {
     return jsonError("日程提醒模板已经更新，请刷新后重新授权。", 409, "SUBSCRIPTION_TEMPLATE_OUTDATED");
   }
   if (!requestContext?.platformCaller?.openId || requestContext.channel !== "mini") {
@@ -1410,6 +1500,46 @@ function formatWechatReminderTime(timestamp) {
 function chinaClockMinutes(timestamp = Date.now()) {
   const date = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
   return date.getUTCHours() * 60 + date.getUTCMinutes();
+}
+
+function chinaDateParts(timestamp = Date.now()) {
+  const shifted = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
+  const year = shifted.getUTCFullYear();
+  const month = shifted.getUTCMonth() + 1;
+  const day = shifted.getUTCDate();
+  return {
+    year,
+    month,
+    day,
+    weekday: shifted.getUTCDay(),
+    key: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    start: Date.UTC(year, month - 1, day) - 8 * 60 * 60 * 1000,
+  };
+}
+
+function reminderWindowOpen(rule, now = Date.now(), graceMinutes = 179) {
+  if (!rule?.enabled) return false;
+  const today = chinaDateParts(now);
+  if (!Array.isArray(rule.days) || !rule.days.includes(today.weekday)) return false;
+  const current = chinaClockMinutes(now);
+  const scheduled = clockValueMinutes(rule.time);
+  return current >= scheduled && current <= scheduled + graceMinutes;
+}
+
+function anniversaryDaysAway(anniversary, now = Date.now()) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(cleanText(anniversary.date, 10));
+  if (!match) return null;
+  const today = chinaDateParts(now);
+  const originalYear = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  let year = anniversary.repeatsYearly === false ? originalYear : today.year;
+  let occurrence = Date.UTC(year, month - 1, day) - 8 * 60 * 60 * 1000;
+  if (anniversary.repeatsYearly !== false && occurrence < today.start) {
+    year += 1;
+    occurrence = Date.UTC(year, month - 1, day) - 8 * 60 * 60 * 1000;
+  }
+  return Math.round((occurrence - today.start) / DAY);
 }
 
 function clockValueMinutes(value) {
@@ -1594,6 +1724,50 @@ async function createNotificationForRecipient(user, couple, recipient, details) 
   return publicNotification(await getDocument("in_app_notifications", id));
 }
 
+function notificationSpaceId(user) {
+  return user.coupleId || soloSpaceId(user.uid);
+}
+
+async function createSystemNotification(recipient, details, source = "scheduled") {
+  const type = cleanText(details.type, 32);
+  const preferenceKey = notificationPreferenceByType[type];
+  const preferences = normalizeNotificationPreferences(recipient.notificationPreferences);
+  if (!preferenceKey || preferences.events[preferenceKey] === false) return null;
+  const spaceId = notificationSpaceId(recipient);
+  const referenceId = cleanText(details.referenceId, 128) || randomId(8);
+  const id = `notice_${sha256(`${spaceId}:${recipient.uid}:${type}:${referenceId}`).slice(0, 44)}`;
+  const existing = await getDocument("in_app_notifications", id);
+  if (existing) return publicNotification(existing);
+  const now = Date.now();
+  const notification = await setDocument("in_app_notifications", id, {
+    coupleId: spaceId,
+    recipientUid: recipient.uid,
+    actorUid: "system",
+    actorNickname: "小田地",
+    type,
+    icon: cleanText(details.icon, 4) || "🔔",
+    title: cleanText(details.title, 30),
+    body: cleanText(details.body, 80),
+    location: cleanText(details.location, 20) || "我们俩的小田地",
+    targetTab: cleanText(details.targetTab, 24) || "farm",
+    referenceId,
+    visible: preferences.inApp,
+    readAt: preferences.inApp ? null : now,
+    wechatStatus: preferences.wechat ? "preparing" : "disabled",
+    createdAt: now,
+    updatedAt: now,
+  });
+  if (preferences.wechat) {
+    const delivery = await sendActivityNotification(notification, recipient, preferences, source);
+    await updateDocument("in_app_notifications", id, {
+      wechatStatus: delivery.status,
+      wechatSentAt: delivery.sentAt || null,
+      updatedAt: Date.now(),
+    });
+  }
+  return publicNotification(await getDocument("in_app_notifications", id));
+}
+
 async function createPartnerNotification(user, relationship, details) {
   return createNotificationForRecipient(user, relationship.couple, relationship.partner, details);
 }
@@ -1622,9 +1796,9 @@ async function bestEffortNotificationsForCouple(user, couple, details) {
 }
 
 async function notificationSummary(user, coupleId) {
-  if (!coupleId) return { unreadCount: 0, availableQuota: 0 };
+  const spaceId = coupleId || notificationSpaceId(user);
   const [documents, availableQuota] = await Promise.all([
-    queryAll("in_app_notifications", { recipientUid: user.uid, coupleId }, [], 120),
+    queryAll("in_app_notifications", { recipientUid: user.uid, coupleId: spaceId }, [], 120),
     notificationQuota(user.uid),
   ]);
   return {
@@ -1634,12 +1808,11 @@ async function notificationSummary(user, coupleId) {
 }
 
 async function notificationCenter(user) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const spaceId = notificationSpaceId(user);
   const [documents, availableQuota] = await Promise.all([
     queryAll("in_app_notifications", {
       recipientUid: user.uid,
-      coupleId: relationship.couple.id,
+      coupleId: spaceId,
     }, [], 200),
     notificationQuota(user.uid),
   ]);
@@ -1662,13 +1835,12 @@ async function notificationCenter(user) {
 }
 
 async function markNotificationRead(user, payload) {
-  const relationship = await requireCouple(user);
-  if (relationship.error) return relationship.error;
+  const spaceId = notificationSpaceId(user);
   const now = Date.now();
   if (payload.all === true) {
     const documents = await queryAll("in_app_notifications", {
       recipientUid: user.uid,
-      coupleId: relationship.couple.id,
+      coupleId: spaceId,
     }, [], 200);
     await Promise.all(documents
       .filter((item) => item.visible !== false && !item.readAt)
@@ -1677,7 +1849,7 @@ async function markNotificationRead(user, payload) {
   }
   const id = cleanText(payload.id, 128);
   const item = id ? await getDocument("in_app_notifications", id) : null;
-  if (!item || item.recipientUid !== user.uid || item.coupleId !== relationship.couple.id) {
+  if (!item || item.recipientUid !== user.uid || item.coupleId !== spaceId) {
     return jsonError("没有找到这条消息。", 404, "NOTIFICATION_NOT_FOUND");
   }
   await updateDocument("in_app_notifications", id, { readAt: now, updatedAt: now });
@@ -1851,6 +2023,133 @@ function maybeDispatchDueReminders(source, force = false) {
     });
   }
   return reminderSweepPromise;
+}
+
+async function dispatchScheduledUserReminders(source = "timer", now = Date.now()) {
+  const users = await queryAll("users", {}, [], 500);
+  const today = chinaDateParts(now);
+  const currentMinutes = chinaClockMinutes(now);
+  let scanned = 0;
+  let created = 0;
+  let skippedBecauseDone = 0;
+
+  for (const user of users.filter((item) => item && item.uid && item.profileComplete !== false)) {
+    const reminders = normalizeReminderSettings(user.reminders);
+    const spaceId = notificationSpaceId(user);
+    const dayEnd = today.start + DAY;
+
+    for (const kind of ["weight", "poop"]) {
+      const rule = reminders[kind];
+      if (!reminderWindowOpen(rule, now)) continue;
+      scanned += 1;
+      const collectionName = kind === "weight" ? "weight_entries" : "poop_entries";
+      const timestampKey = kind === "weight" ? "recordedAt" : "occurredAt";
+      const records = await queryAll(collectionName, { ownerUid: user.uid }, [], 500);
+      const alreadyDone = records.some((item) => (
+        item.coupleId === spaceId
+        && Number(item[timestampKey]) >= today.start
+        && Number(item[timestampKey]) < dayEnd
+      ));
+      if (alreadyDone) {
+        skippedBecauseDone += 1;
+        continue;
+      }
+      const notice = await createSystemNotification(user, {
+        type: "health_reminder",
+        icon: kind === "weight" ? "⚖️" : "🚽",
+        title: kind === "weight" ? "今天还没有称重" : "今天还没有记录如厕",
+        body: kind === "weight" ? "到称重时间啦，记录后就不再提醒" : "到记录时间啦，今天记过就不再提醒",
+        targetTab: "farm",
+        referenceId: `${kind}:${today.key}`,
+      }, source);
+      if (notice) created += 1;
+    }
+
+    if (
+      user.coupleId
+      && reminders.anniversary.enabled
+      && currentMinutes >= 9 * 60
+      && currentMinutes <= 11 * 60 + 59
+    ) {
+      const anniversaries = await queryAll("anniversaries", { coupleId: user.coupleId }, [], 80);
+      for (const anniversary of anniversaries) {
+        const daysAway = anniversaryDaysAway(anniversary, now);
+        if (!reminders.anniversary.advanceDays.includes(daysAway)) continue;
+        scanned += 1;
+        const when = daysAway === 0 ? "就是今天" : daysAway === 1 ? "就在明天" : `还有 ${daysAway} 天`;
+        const notice = await createSystemNotification(user, {
+          type: "anniversary_reminder",
+          icon: cleanText(anniversary.icon, 4) || "💞",
+          title: cleanText(anniversary.title, 24) || "纪念日提醒",
+          body: `${cleanText(anniversary.title, 12)}${when}，别忘了准备一点心意`,
+          targetTab: "anniversaries",
+          referenceId: `${anniversary.id}:${today.key}:${daysAway}`,
+        }, source);
+        if (notice) created += 1;
+      }
+    }
+  }
+  return { scanned, created, skippedBecauseDone, users: users.length };
+}
+
+function dailySparkDefinition(couple, now = Date.now()) {
+  const date = chinaDateParts(now).key;
+  const digest = sha256(`${couple.id}:${date}`);
+  const prompt = dailySparkPrompts[Number.parseInt(digest.slice(0, 8), 16) % dailySparkPrompts.length];
+  return {
+    id: `spark_${sha256(`${couple.id}:${date}`).slice(0, 44)}`,
+    date,
+    ...prompt,
+  };
+}
+
+async function readDailySpark(couple, now = Date.now()) {
+  const definition = dailySparkDefinition(couple, now);
+  const document = await getDocument("daily_sparks", definition.id);
+  const completedByUids = Array.isArray(document?.completedByUids)
+    ? document.completedByUids.filter((uid) => couple.memberUids.includes(uid))
+    : [];
+  return {
+    ...definition,
+    completedByUids,
+    bothCompleted: couple.memberUids.every((uid) => completedByUids.includes(uid)),
+  };
+}
+
+async function completeDailySpark(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const current = await readDailySpark(relationship.couple);
+  const completedByUids = [...new Set([...current.completedByUids, user.uid])];
+  const newlyCompleted = !current.completedByUids.includes(user.uid);
+  const now = Date.now();
+  await setDocument("daily_sparks", current.id, {
+    coupleId: relationship.couple.id,
+    date: current.date,
+    icon: current.icon,
+    title: current.title,
+    detail: current.detail,
+    completedByUids,
+    createdAt: now,
+    updatedAt: now,
+  });
+  if (newlyCompleted) {
+    await bestEffortPartnerNotification(user, relationship, {
+      type: "spark_completed",
+      icon: "✨",
+      title: "今日心动任务有进展",
+      body: `${cleanText(user.nickname, 10)} 完成了：${cleanText(current.title, 18)}`,
+      targetTab: "farm",
+      referenceId: `${current.id}:${user.uid}`,
+    });
+  }
+  return response(200, {
+    spark: {
+      ...current,
+      completedByUids,
+      bothCompleted: relationship.couple.memberUids.every((uid) => completedByUids.includes(uid)),
+    },
+  });
 }
 
 async function createInvite(user) {
@@ -2239,13 +2538,15 @@ async function togetherHub(user, payload) {
   });
 }
 
-async function addTogetherOption(user, payload) {
+async function addTogetherOption(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const label = cleanText(payload.label, 20);
   const cuisine = cleanText(payload.cuisine, 10);
   const note = cleanText(payload.note, 30);
   if (label.length < 2) return jsonError("候选餐厅至少需要两个字。", 400, "OPTION_LABEL_INVALID");
+  const safetyError = await checkMiniPublishedText(`${label}\n${cuisine}\n${note}`, requestContext);
+  if (safetyError) return safetyError;
   const existing = await queryAll("together_options", { coupleId: relationship.couple.id }, [], 80);
   const active = existing.filter((option) => option.active !== false);
   const membership = membershipState(relationship.couple);
@@ -2388,7 +2689,7 @@ async function respondTogetherDecision(user, payload) {
   return response(200, { decision: publicDecision(updated) });
 }
 
-async function saveDailyCheckin(user, payload) {
+async function saveDailyCheckin(user, payload, requestContext) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
   const date = togetherDate(payload.date);
@@ -2398,6 +2699,8 @@ async function saveDailyCheckin(user, payload) {
     return jsonError("请选择今天的心情和能量。", 400, "CHECKIN_INVALID");
   }
   const note = cleanText(payload.note, 40);
+  const safetyError = await checkMiniPublishedText(note, requestContext);
+  if (safetyError) return safetyError;
   const now = Date.now();
   const id = `checkin_${sha256(`${relationship.couple.id}:${date}:${user.uid}`)}`;
   const existing = await getDocument("daily_checkins", id);
@@ -2689,11 +2992,8 @@ async function createCommunityPost(user, payload, requestContext) {
   const imageFileId = normalizeAvatarFileId(payload.imageFileId, user.uid, "community");
   if (imageFileId === undefined) return jsonError("动态图片地址不正确，请重新选择。", 400, "POST_IMAGE_INVALID");
   if (imageFileId) {
-    const imageError = await checkImageSafety(imageFileId, requestContext);
-    if (imageError) {
-      if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(imageFileId);
-      return imageError;
-    }
+    const imageError = await ensureImageModerated(user, imageFileId, "community", requestContext);
+    if (imageError) return imageError;
   }
   const updatedCouple = await maybeRefreshCommunityStats(relationship.couple, true);
   const settings = normalizeCommunitySettings(updatedCouple);
@@ -3288,11 +3588,8 @@ async function createVillagePost(user, payload, requestContext) {
   const imageFileId = normalizeAvatarFileId(payload.imageFileId, user.uid, "community");
   if (imageFileId === undefined) return jsonError("动态图片地址不正确，请重新选择。", 400, "POST_IMAGE_INVALID");
   if (imageFileId) {
-    const imageError = await checkImageSafety(imageFileId, requestContext);
-    if (imageError) {
-      if (shouldDiscardRejectedImage(imageError)) await removeUploadedFile(imageFileId);
-      return imageError;
-    }
+    const imageError = await ensureImageModerated(user, imageFileId, "community", requestContext);
+    if (imageError) return imageError;
   }
   const now = Date.now();
   const post = await addDocument("community_posts", {
@@ -3458,18 +3755,19 @@ async function handleAction(user, action, payload, requestContext) {
   switch (action) {
     case "bootstrap": return bootstrap(user);
     case "get-dashboard": return readDashboard(user);
+    case "moderate-upload": return moderateUpload(user, payload, requestContext);
     case "update-profile": return updateProfile(user, payload, requestContext);
-    case "update-couple-settings": return updateCoupleSettings(user, payload);
+    case "update-couple-settings": return updateCoupleSettings(user, payload, requestContext);
     case "update-reminders": return updateReminderSettings(user, payload);
     case "create-invite": return createInvite(user);
     case "accept-invite": return acceptInvite(user, payload);
     case "unbind": return unbind(user);
-    case "add-anniversary": return addAnniversary(user, payload);
-    case "update-anniversary": return updateAnniversary(user, payload);
+    case "add-anniversary": return addAnniversary(user, payload, requestContext);
+    case "update-anniversary": return updateAnniversary(user, payload, requestContext);
     case "delete-anniversary": return deleteAnniversary(user, payload);
     case "shared-notebook": return sharedNotebook(user);
-    case "create-shared-memo": return createSharedMemo(user, payload);
-    case "update-shared-memo": return updateSharedMemo(user, payload);
+    case "create-shared-memo": return createSharedMemo(user, payload, requestContext);
+    case "update-shared-memo": return updateSharedMemo(user, payload, requestContext);
     case "toggle-shared-memo": return toggleSharedMemo(user, payload);
     case "delete-shared-memo": return deleteSharedMemo(user, payload);
     case "save-subscription-consent": return saveSubscriptionConsent(user, payload, requestContext);
@@ -3482,16 +3780,17 @@ async function handleAction(user, action, payload, requestContext) {
     case "update-poop": return updatePoop(user, payload);
     case "react": return react(user, payload);
     case "send-nudge": return sendNudge(user, payload);
+    case "complete-daily-spark": return completeDailySpark(user);
     case "delete-weight": return removeOwnedDocument(user, "weight_entries", payload.id);
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
     case "delete-identity": return deleteIdentity(user);
     case "together-hub": return togetherHub(user, payload);
-    case "add-together-option": return addTogetherOption(user, payload);
+    case "add-together-option": return addTogetherOption(user, payload, requestContext);
     case "archive-together-option": return archiveTogetherOption(user, payload);
     case "spin-together-decision": return spinTogetherDecision(user, payload);
     case "respond-together-decision": return respondTogetherDecision(user, payload);
-    case "save-daily-checkin": return saveDailyCheckin(user, payload);
+    case "save-daily-checkin": return saveDailyCheckin(user, payload, requestContext);
     case "answer-daily-question": return answerDailyQuestion(user, payload);
     case "claim-founder-trial": return claimFounderTrial(user);
     case "join-membership-waitlist": return joinMembershipWaitlist(user, payload);
@@ -3528,8 +3827,9 @@ exports.main = async function main(event = {}, context = {}) {
     try {
       await ensureCollections();
       const reminderResult = await maybeDispatchDueReminders("timer", true);
+      const scheduled = await dispatchScheduledUserReminders("timer");
       const activity = await dispatchPendingActivityNotifications("timer");
-      return response(200, { ...reminderResult, activity });
+      return response(200, { ...reminderResult, scheduled, activity });
     } catch (error) {
       console.error("scheduled reminder sweep failed", errorDetails(error));
       return response(500, { ok: false, code: "REMINDER_SWEEP_FAILED" });
@@ -3539,9 +3839,47 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.7.0",
+      version: "0.8.0",
       serverTime: Date.now(),
     });
+  }
+
+  if (action === "content-safety-health") {
+    try {
+      await ensureCollections();
+      await queryAll("content_moderations", {}, [["updatedAt", "desc"]], 1);
+      return response(200, {
+        ok: true,
+        service: "content-safety",
+        version: "0.8.0",
+        apis: ["security.msgSecCheck", "security.imgSecCheck"],
+        coverage: [
+          "avatar-image",
+          "nickname",
+          "farm-name",
+          "anniversary",
+          "shared-memo",
+          "restaurant-option",
+          "mood-note",
+          "community-profile",
+          "community-post-image-text",
+          "community-comment",
+          "village-profile",
+          "village-post-image-text",
+          "village-comment",
+        ],
+        rejectMessage: "你发布的内容含违规信息。",
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+      console.error("content safety health check failed", { diagnosticId, ...errorDetails(error) });
+      return response(500, {
+        error: "内容安全服务尚未准备好。",
+        code: "CONTENT_SAFETY_HEALTH_FAILED",
+        diagnosticId,
+      });
+    }
   }
 
   if (action === "community-health") {
@@ -3555,7 +3893,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.7.0",
+        version: "0.8.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -3580,7 +3918,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "village",
-        version: "0.7.0",
+        version: "0.8.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -3605,7 +3943,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "notifications",
-        version: "0.7.0",
+        version: "0.8.0",
         templateConfigured: Boolean(WECHAT_MEMO_TEMPLATE_ID),
         serverTime: Date.now(),
       });

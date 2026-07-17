@@ -47,5 +47,7 @@ export function imageUploadErrorMessage(error: unknown, fallback: string) {
   if (raw.includes("cancel")) return null;
   if (raw.includes("IMAGE_TOO_LARGE")) return "图片还是太大，请换一张或先裁剪";
   if (raw.includes("IMAGE_READ_FAILED")) return "没有读取到这张图片，请重新选择";
+  if (raw.includes("你发布的内容含违规信息")) return "你发布的内容含违规信息。";
+  if (raw.includes("图片安全检查暂时没有响应")) return "图片安全检查暂时没有响应，请稍后再试。";
   return fallback;
 }

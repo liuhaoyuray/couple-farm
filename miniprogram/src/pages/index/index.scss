@@ -66,6 +66,7 @@ button::after { border: 0; }
 .profile-badge.small { width: 80rpx; height: 80rpx; border-width: 4rpx; border-radius: 23rpx; box-shadow: none; font-size: 41rpx; }
 .profile-badge.tiny { width: 64rpx; height: 64rpx; border-width: 3rpx; border-radius: 18rpx; box-shadow: none; font-size: 33rpx; }
 .profile-avatar-image { width: 100%; height: 100%; border-radius: inherit; }
+.cloud-image-placeholder { display: flex; align-items: center; justify-content: center; background: linear-gradient(145deg, #f4efff, #fff8dc); color: $muted; font-size: 24rpx; text-align: center; }
 .custom-avatar-row { display: flex; align-items: center; gap: 22rpx; margin: 20rpx 0; padding: 19rpx; border: 3rpx dashed #b7a7e7; border-radius: 22rpx; background: #faf8ff; text-align: left; }
 .custom-avatar-row > view:last-child { flex: 1; }
 .custom-avatar-preview { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; overflow: hidden; width: 112rpx; height: 112rpx; border: 4rpx solid $shadow; border-radius: 30rpx; font-size: 56rpx; }
@@ -98,6 +99,21 @@ button::after { border: 0; }
 .setup-banner { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; margin-top: 24rpx; padding: 20rpx 22rpx; border: 4rpx dashed $pink; border-radius: 22rpx; background: #fff0f5; color: #8c284a; font-size: 24rpx; font-weight: 800; }
 .setup-banner text:first-child { flex: 1; }
 .notification-onboarding { border-color: #9d8cff; background: linear-gradient(135deg, #f4f0ff, #fff2f6); color: $violet-dark; }
+.message-hub-card { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 16rpx; margin: 20rpx 0; padding: 22rpx; border: 4rpx solid #c6b9f5; border-radius: 24rpx; background: linear-gradient(135deg, #fff, #f5f0ff); box-shadow: 0 7rpx 0 rgba(58,44,89,.12); }
+.message-hub-card.has-unread { border-color: #ef7da4; background: linear-gradient(135deg, #fff7fa, #f5efff); }
+.message-hub-card > view { min-width: 0; }
+.message-hub-icon { display: flex; align-items: center; justify-content: center; width: 70rpx; height: 70rpx; border-radius: 20rpx; background: #fff0f5; font-size: 38rpx; }
+.message-hub-count { padding: 7rpx 11rpx; border-radius: 12rpx; background: #eae3ff; color: $violet-dark; font-size: 19rpx; font-weight: 900; white-space: nowrap; }
+.section-switcher { position: sticky; top: 12rpx; z-index: 10; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8rpx; margin: 0 0 20rpx; padding: 7rpx; border: 4rpx solid $shadow; border-radius: 21rpx; background: rgba(255,254,249,.96); box-shadow: 0 5rpx 0 rgba(58,44,89,.1); }
+.section-switcher.three { grid-template-columns: repeat(3, 1fr); }
+.section-switcher button { min-height: 61rpx; margin: 0; padding: 0 10rpx; border-radius: 15rpx; background: transparent; color: $muted; font-size: 21rpx; font-weight: 900; line-height: 57rpx; }
+.section-switcher button.active { background: #e9e2ff; color: $violet-dark; box-shadow: inset 0 0 0 3rpx #c8b9ff; }
+.daily-spark-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18rpx; overflow: hidden; border-color: #e2c85e; background: linear-gradient(145deg, #fffced, #fff2f7); }
+.daily-spark-card.complete { border-color: #8bc59f; background: linear-gradient(145deg, #f2fff4, #fffce9); }
+.daily-spark-icon { font-size: 58rpx; }
+.daily-spark-copy { min-width: 0; }
+.daily-spark-card button { min-height: 62rpx; margin: 0; padding: 0 16rpx; font-size: 20rpx; line-height: 56rpx; }
+.spark-progress { display: block; margin-top: 9rpx; color: $violet-dark; font-size: 20rpx; font-weight: 900; }
 .reminder-stack { margin-top: 24rpx; }
 .reminder-card { display: flex; align-items: center; gap: 16rpx; margin-top: 12rpx; padding: 18rpx 20rpx; border: 4rpx solid #d9ccff; border-radius: 22rpx; background: #f4f0ff; box-shadow: 0 5rpx 0 rgba(73,48,189,.14); }
 .reminder-icon { font-size: 39rpx; }
@@ -167,6 +183,15 @@ button::after { border: 0; }
 .range-tabs button { min-width: 74rpx; min-height: 52rpx; margin: 0; padding: 0 10rpx; border-radius: 10rpx; background: transparent; color: $muted; font-size: 20rpx; line-height: 52rpx; }
 .range-tabs button.active { background: #fff; color: $violet-dark; box-shadow: 0 3rpx 0 rgba(58,44,89,.12); font-weight: 900; }
 .weight-chart { display: block; width: 100%; height: 400rpx; margin-top: 22rpx; border-radius: 20rpx; background: linear-gradient(rgba(116,87,255,.06) 2rpx, transparent 2rpx); background-size: 100% 80rpx; }
+.view-trend-chart { position: relative; overflow: hidden; box-sizing: border-box; padding: 24rpx 18rpx 28rpx 64rpx; background: #fffaf0; }
+.view-trend-chart.empty-trend { display: flex; align-items: center; justify-content: center; padding: 0; color: $muted; font-size: 23rpx; font-weight: 800; }
+.trend-grid-line { position: absolute; right: 18rpx; left: 64rpx; height: 2rpx; background: #e6ddce; }
+.trend-axis { position: absolute; left: 8rpx; z-index: 2; color: $muted; font-size: 18rpx; font-weight: 750; }
+.trend-axis-max { top: 12rpx; }
+.trend-axis-min { bottom: 11rpx; }
+.trend-series { position: absolute; top: 24rpx; right: 18rpx; bottom: 28rpx; left: 64rpx; }
+.trend-path-dot { position: absolute; z-index: 2; width: 7rpx; height: 7rpx; margin: -3rpx 0 0 -3rpx; border-radius: 50%; }
+.trend-point { position: absolute; z-index: 3; width: 15rpx; height: 15rpx; margin: -8rpx 0 0 -8rpx; border: 5rpx solid; border-radius: 50%; background: #fff; box-sizing: border-box; }
 .stat-card { padding: 22rpx; border-top-width: 9rpx; }
 .stat-large { display: block; margin: 9rpx 0 4rpx; font-size: 43rpx; font-weight: 900; }
 .stat-large text { font-size: 23rpx; }
@@ -425,7 +450,7 @@ button::after { border: 0; }
 .outline-danger, .danger-solid { min-height: 76rpx; margin-top: 15rpx; border: 3rpx solid #c34267; border-radius: 17rpx; background: transparent; color: #a62d52; font-size: 24rpx; font-weight: 800; line-height: 70rpx; }
 .danger-solid { background: #b52e56; color: #fff; }
 
-.tab-bar { position: fixed; right: 20rpx; bottom: calc(18rpx + env(safe-area-inset-bottom)); left: 20rpx; z-index: 20; display: grid; grid-template-columns: repeat(6, 1fr); padding: 9rpx; border: 4rpx solid $shadow; border-radius: 27rpx; background: rgba(255,254,249,.97); box-shadow: 0 8rpx 0 $shadow, 0 -4rpx 24rpx rgba(58,44,89,.12); }
+.tab-bar { position: fixed; right: 20rpx; bottom: calc(18rpx + env(safe-area-inset-bottom)); left: 20rpx; z-index: 20; display: grid; grid-template-columns: repeat(4, 1fr); padding: 9rpx; border: 4rpx solid $shadow; border-radius: 27rpx; background: rgba(255,254,249,.97); box-shadow: 0 8rpx 0 $shadow, 0 -4rpx 24rpx rgba(58,44,89,.12); }
 .solo-tab-bar { grid-template-columns: repeat(4, 1fr); }
 .tab-item { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 86rpx; margin: 0; padding: 5rpx 0; border-radius: 18rpx; background: transparent; color: $muted; font-size: 20rpx; font-weight: 800; line-height: 1.25; }
 .tab-item text:first-child { font-size: 31rpx; }
@@ -434,6 +459,8 @@ button::after { border: 0; }
 @media (max-width: 370px) {
   .people-grid { grid-template-columns: 1fr; }
   .farm-title { max-width: 360rpx; font-size: 41rpx; }
+  .daily-spark-card { grid-template-columns: auto 1fr; }
+  .daily-spark-card button { grid-column: 1 / 3; width: 100%; }
   .anniversary-meta { grid-template-columns: 1fr; }
   .anniversary-card { grid-template-columns: 65rpx 1fr; }
   .countdown { grid-column: 1 / 3; text-align: left; }

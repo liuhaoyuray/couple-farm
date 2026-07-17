@@ -1,10 +1,11 @@
-import { Button, Canvas, Image, Input, Picker, ScrollView, Switch, Text, Textarea, View } from "@tarojs/components";
+import { Button, Input, Picker, ScrollView, Switch, Text, Textarea, View } from "@tarojs/components";
 import Taro, { useDidShow, usePullDownRefresh } from "@tarojs/taro";
-/* eslint-disable jsx-a11y/alt-text -- Taro Image does not expose the HTML alt prop. */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import CloudImage from "../../cloud-image";
 import { cloudCall } from "../../cloud";
-import { imageUploadErrorMessage, prepareImageForUpload } from "../../media";
+import { deleteCloudFileQuietly, imageUploadErrorMessage, prepareImageForUpload } from "../../media";
 import NotificationsPanel from "./notifications";
+import TrendChart from "./trend-chart";
 import NotebookPanel from "./notebook";
 import TogetherPanel from "./together";
 import VillagePanel from "./village";
@@ -89,6 +90,15 @@ type FarmData = {
   anniversaries?: Anniversary[];
   sharedMemos?: SharedMemoSummary[];
   notificationSummary?: { unreadCount: number; availableQuota: number };
+  dailySpark?: {
+    id: string;
+    date: string;
+    icon: string;
+    title: string;
+    detail: string;
+    completedByUids: string[];
+    bothCompleted: boolean;
+  };
   weeklyPulse?: {
     jointDays: number;
     cheers: number;
@@ -241,7 +251,7 @@ function ProfileAvatar({ profile, size = "" }: { profile: UserProfile; size?: "s
   return (
     <View className={`profile-badge ${size}`.trim()} style={{ background: profile.color }}>
       {profile.avatarFileId
-        ? <Image className="profile-avatar-image" src={profile.avatarFileId} mode="aspectFill" />
+        ? <CloudImage className="profile-avatar-image" fileId={profile.avatarFileId} fallback={profile.avatar} />
         : <Text>{profile.avatar}</Text>}
     </View>
   );
@@ -252,7 +262,7 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
         <Text className="title">{error ? "小田地打了个盹" : "正在打开我们俩的小田地"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
@@ -383,6 +393,11 @@ export default function IndexPage() {
         cloudPath: `avatars/${data.viewer.uid}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`,
         filePath,
       });
+      const moderation = await cloudCall("moderate-upload", { fileId: uploaded.fileID, kind: "avatar" });
+      if (moderation.status !== 200) {
+        await deleteCloudFileQuietly(uploaded.fileID);
+        throw new Error(String(moderation.data.error || "图片安全检查暂时没有响应，请稍后再试。"));
+      }
       setProfileAvatarFileId(uploaded.fileID);
       await Taro.showToast({ title: "头像已选好，记得保存", icon: "none" });
     } catch (uploadError) {
@@ -466,7 +481,15 @@ export default function IndexPage() {
   };
 
   const saveReminderSettings = async () => {
-    await runAction("update-reminders", { reminders }, "提醒保存啦");
+    const result = await runAction("update-reminders", { reminders }, "定时提醒保存啦");
+    if (result && !data?.notificationSummary?.availableQuota && (reminders.weight.enabled || reminders.poop.enabled || reminders.anniversary.enabled)) {
+      const choice = await Taro.showModal({
+        title: "还差微信提醒次数",
+        content: "定时规则已经保存。微信规定每次授权只能发送 1 条提醒，现在去消息盒领取一次吗？",
+        confirmText: "去领取",
+      });
+      if (choice.confirm) setActiveTab("inbox");
+    }
   };
 
   const addDailyCalendarReminder = async (kind: "weight" | "poop") => {
@@ -688,71 +711,6 @@ export default function IndexPage() {
     ...weekPoopStats.flatMap((day) => day.values),
   ), [weekPoopStats]);
 
-  useEffect(() => {
-    if (activeTab !== "trends" || !data) return undefined;
-    const timer = setTimeout(() => {
-      const context = Taro.createCanvasContext("weightChart");
-      const width = Math.max(280, Taro.getSystemInfoSync().windowWidth - 52);
-      const height = 190;
-      const padding = { left: 34, right: 12, top: 18, bottom: 28 };
-      const since = Date.now() - trendRange * DAY;
-      const visible = weights.filter((entry) => entry.recordedAt >= since);
-      context.setFillStyle("#fffaf0");
-      context.fillRect(0, 0, width, height);
-      context.setStrokeStyle("#e6ddce");
-      context.setLineWidth(1);
-      for (let index = 0; index < 4; index += 1) {
-        const y = padding.top + ((height - padding.top - padding.bottom) * index) / 3;
-        context.beginPath();
-        context.moveTo(padding.left, y);
-        context.lineTo(width - padding.right, y);
-        context.stroke();
-      }
-      if (!visible.length) {
-        context.setFillStyle("#746d83");
-        context.setFontSize(13);
-        context.fillText("这个区间还没有体重记录", 64, 98);
-        context.draw();
-        return;
-      }
-      const values = visible.map((entry) => entry.weightKg);
-      const minimum = Math.min(...values) - 1;
-      const maximum = Math.max(...values) + 1;
-      const plotWidth = width - padding.left - padding.right;
-      const plotHeight = height - padding.top - padding.bottom;
-      for (const person of people) {
-        const entries = visible.filter((entry) => entry.ownerUid === person.uid).sort((left, right) => left.recordedAt - right.recordedAt);
-        if (!entries.length) continue;
-        context.setStrokeStyle(person.color);
-        context.setFillStyle(person.color);
-        context.setLineWidth(3);
-        context.beginPath();
-        entries.forEach((entry, index) => {
-          const x = padding.left + ((entry.recordedAt - since) / (trendRange * DAY)) * plotWidth;
-          const y = padding.top + (1 - (entry.weightKg - minimum) / Math.max(1, maximum - minimum)) * plotHeight;
-          if (index === 0) context.moveTo(x, y);
-          else context.lineTo(x, y);
-        });
-        context.stroke();
-        entries.forEach((entry) => {
-          const x = padding.left + ((entry.recordedAt - since) / (trendRange * DAY)) * plotWidth;
-          const y = padding.top + (1 - (entry.weightKg - minimum) / Math.max(1, maximum - minimum)) * plotHeight;
-          context.beginPath();
-          context.arc(x, y, 3.5, 0, Math.PI * 2);
-          context.fill();
-        });
-      }
-      context.setFillStyle("#746d83");
-      context.setFontSize(10);
-      context.fillText(`${maximum.toFixed(1)}kg`, 2, padding.top + 3);
-      context.fillText(`${minimum.toFixed(1)}kg`, 2, height - padding.bottom);
-      context.fillText(`${trendRange}天前`, padding.left, height - 7);
-      context.fillText("今天", width - 34, height - 7);
-      context.draw();
-    }, 120);
-    return () => clearTimeout(timer);
-  }, [activeTab, data, people, trendRange, weights]);
-
   if (loading) return <Loading />;
   if (error && !data) return <Loading error={error} retry={() => bootstrap()} />;
   if (!data) return <Loading error="没有拿到田地数据。" retry={() => bootstrap()} />;
@@ -764,7 +722,7 @@ export default function IndexPage() {
           <Text className="kicker">第一次见面</Text>
           <Text className="title">你想在田地里叫什么？</Text>
           <Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="例如 小麦苗、团子、阿星" />
-          <View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">设置自己的图片头像</Text><Text className="role">支持相册或拍照，保存时会进行安全检查</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View>
+          <View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <CloudImage fileId={profileAvatarFileId} fallback={profileAvatar} /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">设置自己的图片头像</Text><Text className="role">支持相册或拍照，上传后立即安全检查</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View>
           <Text className="community-label">或者选择一个田地居民</Text>
           <View className="avatar-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View>
           <View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View>
@@ -777,7 +735,8 @@ export default function IndexPage() {
 
   if (!data.couple || !data.partner) {
     const viewer = data.viewer;
-    const soloTab: TabKey = ["farm", "trends", "pair", "us"].includes(activeTab) ? activeTab : "farm";
+    const soloTab: TabKey = ["farm", "trends", "pair", "us", "inbox"].includes(activeTab) ? activeTab : "farm";
+    const soloRootTab: TabKey = soloTab === "inbox" ? "us" : soloTab;
     const myWeightDone = todayWeights(weights, viewer.uid) > 0;
     const myPoopDone = todayPoops(poops, viewer.uid) > 0;
     const farmProgress = (Number(myWeightDone) + Number(myPoopDone)) * 50;
@@ -789,9 +748,11 @@ export default function IndexPage() {
 
             {soloTab === "farm" && <>
               <View className="farm-hero solo-hero">
-                <View><Text className="kicker">我们俩的小田地 · 0.7.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
+                <View><Text className="kicker">我们俩的小田地 · 0.8.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
                 <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🌷</Text></View>
               </View>
+
+              <View className={`message-hub-card ${unreadCount ? "has-unread" : ""}`} onClick={() => setActiveTab("inbox")}><Text className="message-hub-icon">💌</Text><View><Text className="activity-title">{unreadCount ? `${unreadCount} 条新消息` : "消息与定时提醒"}</Text><Text className="role">领取微信提醒次数，管理每日提醒</Text></View><Text className="message-hub-count">{data.notificationSummary?.availableQuota || 0} 次</Text><Text className="chevron">›</Text></View>
 
               <View className="setup-banner solo-pair-banner" onClick={() => setActiveTab("pair")}><View><Text className="activity-title">💞 找伴侣一起种田</Text><Text className="role">不配对也能继续体验体重和如厕记录</Text></View><Text>去配对 ›</Text></View>
 
@@ -810,7 +771,7 @@ export default function IndexPage() {
 
             {soloTab === "trends" && <>
               <View className="page-heading"><Text className="kicker">我的趋势</Text><Text className="title">没配对，也能先看见自己的变化</Text><Text className="description">配对后历史记录会自动迁移，并与伴侣的曲线一起展示。</Text></View>
-              <View className="panel chart-panel"><View className="section-heading"><View><Text className="subtitle">体重曲线</Text><View className="legend-row"><Text><Text className="legend-dot" style={{ background: viewer.color }} />{viewer.nickname}</Text></View></View><View className="range-tabs">{([7, 30, 90] as const).map((range) => <Button key={range} className={trendRange === range ? "active" : ""} onClick={() => setTrendRange(range)}>{range}天</Button>)}</View></View><Canvas canvasId="weightChart" id="weightChart" className="weight-chart" /></View>
+              <View className="panel chart-panel"><View className="section-heading"><View><Text className="subtitle">体重曲线</Text><View className="legend-row"><Text><Text className="legend-dot" style={{ background: viewer.color }} />{viewer.nickname}</Text></View></View><View className="range-tabs">{([7, 30, 90] as const).map((range) => <Button key={range} className={trendRange === range ? "active" : ""} onClick={() => setTrendRange(range)}>{range}天</Button>)}</View></View><TrendChart entries={weights} people={[viewer]} rangeDays={trendRange} endTime={data.serverTime} /></View>
               <View className="panel"><Text className="kicker">最近 7 天</Text><Text className="subtitle">如厕趋势</Text><Text className="description small">记录再多也会按比例压缩柱高，数字显示真实次数。</Text><View className="poop-chart">{weekPoopStats.map((day) => <View className="poop-day" key={day.key}><View className="poop-bars">{day.values.map((count, index) => <View key={`${day.key}-${people[index]?.uid}`} className="poop-bar-wrap"><Text className="poop-count">{count || ""}</Text><View className="poop-bar" style={{ height: `${poopBarHeight(count, weekPoopMaximum)}rpx`, background: viewer.color }} /></View>)}</View><Text className="role">{day.label}</Text></View>)}</View></View>
               <View className="panel"><Text className="kicker">记录管理</Text><Text className="subtitle">最近的记录</Text>{recordItems.length ? <View className="record-list">{recordItems.slice(0, 24).map((record) => <View className="record-row" key={`${record.type}-${record.id}`}><Text className="record-icon">{record.type === "weight" ? "⚖️" : "🚽"}</Text><View className="record-copy"><Text className="activity-title">{record.type === "weight" ? `${record.weightKg?.toFixed(1)} kg` : "一次如厕"}</Text><Text className="role">{formatDateTime(record.occurredAt)}</Text></View><View className="record-actions"><Button onClick={() => beginEditRecord(record)}>编辑</Button><Button className="danger-mini" onClick={() => confirmDeleteRecord(record)}>删除</Button></View></View>)}</View> : <View className="empty">还没有记录。</View>}</View>
             </>}
@@ -824,15 +785,18 @@ export default function IndexPage() {
 
             {soloTab === "us" && <>
               <View className="page-heading"><Text className="kicker">我的设置</Text><Text className="title">先把体验田变成自己的样子</Text></View>
-              <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">相册或拍照均可</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">田地 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
-              <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">先养成自己的记录习惯</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">到点且今天未记录时提示</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">到点且今天未记录时提示</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历</Button><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存提醒设置</Button></View>
+              <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <CloudImage fileId={profileAvatarFileId} fallback={profileAvatar} /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">上传后立即进行安全检查</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">田地 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
+              <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">先养成自己的记录习惯</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">云端到点检查，今天记过就不打扰</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">云端到点检查，今天记过就不打扰</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历</Button><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存提醒设置</Button></View>
+              <View className="panel notification-settings-shortcut" onClick={() => setActiveTab("inbox")}><Text className="notification-shortcut-icon">💌</Text><View><Text className="kicker">消息与微信提醒</Text><Text className="subtitle compact-title">{unreadCount ? `${unreadCount} 条未读消息` : "管理免打扰和提醒次数"}</Text></View><Text className="chevron">›</Text></View>
               <View className="panel privacy-panel"><Text className="kicker">隐私与数据</Text><Text className="subtitle">个人体验数据由你管理</Text><Text className="description small">配对前的体重和如厕记录只有你能查看；配对后才会向当前伴侣展示。</Text><Button className="outline-danger" onClick={clearMyRecords}>清空我的记录</Button><Button className="danger-solid" onClick={deleteIdentity}>注销我的田地身份</Button></View>
             </>}
+
+            {soloTab === "inbox" && <NotificationsPanel onSummaryChange={updateNotificationSummary} onNavigate={(tab) => setActiveTab(tab as TabKey)} />}
           </View>
         </ScrollView>
         <View className="tab-bar solo-tab-bar">{([[
           "farm", "🏡", "田地",
-        ], ["trends", "📈", "趋势"], ["pair", "💞", "配对"], ["us", "⚙️", "我的"]] as const).map(([key, icon, label]) => <Button key={key} className={soloTab === key ? "tab-item active" : "tab-item"} onClick={() => setActiveTab(key)}><Text>{icon}</Text><Text>{label}</Text></Button>)}</View>
+        ], ["trends", "📈", "趋势"], ["pair", "💞", "配对"], ["us", "⚙️", "我的"]] as const).map(([key, icon, label]) => <Button key={key} className={soloRootTab === key ? "tab-item active" : "tab-item"} onClick={() => setActiveTab(key)}><Text>{icon}</Text><Text>{label}</Text></Button>)}</View>
       </View>
     );
   }
@@ -849,19 +813,26 @@ export default function IndexPage() {
         <View className="page dashboard-page">
           {error && <View className="error-banner"><Text>{error}</Text><Button onClick={() => setError(null)}>×</Button></View>}
 
+          {["farm", "trends"].includes(activeTab) && <View className="section-switcher"><Button className={activeTab === "farm" ? "active" : ""} onClick={() => setActiveTab("farm")}>今日田地</Button><Button className={activeTab === "trends" ? "active" : ""} onClick={() => setActiveTab("trends")}>健康趋势</Button></View>}
+          {["together", "notebook", "anniversaries"].includes(activeTab) && <View className="section-switcher three"><Button className={activeTab === "together" ? "active" : ""} onClick={() => setActiveTab("together")}>今日相伴</Button><Button className={activeTab === "notebook" ? "active" : ""} onClick={() => setActiveTab("notebook")}>小本本</Button><Button className={activeTab === "anniversaries" ? "active" : ""} onClick={() => setActiveTab("anniversaries")}>纪念日</Button></View>}
+          {["us", "inbox"].includes(activeTab) && <View className="section-switcher"><Button className={activeTab === "us" ? "active" : ""} onClick={() => setActiveTab("us")}>我的设置</Button><Button className={activeTab === "inbox" ? "active" : ""} onClick={() => setActiveTab("inbox")}>消息{unreadCount ? ` ${unreadCount}` : ""}</Button></View>}
+
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">我们俩的小田地 · 0.7.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
-              <Button className="message-bell" onClick={() => setActiveTab("inbox")}><Text>💌</Text>{unreadCount > 0 && <Text className="message-badge">{unreadCount > 99 ? "99+" : unreadCount}</Text>}</Button>
+              <View><Text className="kicker">我们俩的小田地 · 0.8.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>
+
+            <View className={`message-hub-card ${unreadCount ? "has-unread" : ""}`} onClick={() => setActiveTab("inbox")}><Text className="message-hub-icon">💌</Text><View><Text className="activity-title">{unreadCount ? `${unreadCount} 条伴侣新消息` : "情侣消息与微信提醒"}</Text><Text className="role">打卡、点赞、催促和定时提醒都在这里</Text></View><Text className="message-hub-count">{data.notificationSummary?.availableQuota || 0} 次</Text><Text className="chevron">›</Text></View>
 
             {!data.couple.togetherSince && <View className="setup-banner" onClick={() => setActiveTab("us")}><Text>💞 设置你们在一起的日期，开始计算纪念天数</Text><Text>去设置 ›</Text></View>}
 
             {!data.notificationSummary?.availableQuota && <View className="setup-banner notification-onboarding" onClick={() => setActiveTab("inbox")}><Text>🔔 存 1 次微信提醒，伴侣下次打卡或点赞时及时告诉你</Text><Text>去开启 ›</Text></View>}
 
             {reminderCards.length > 0 && <View className="reminder-stack">{reminderCards.map((card) => <View className="reminder-card" key={card.key} onClick={() => setActiveTab(card.tab)}><Text className="reminder-icon">{card.icon}</Text><View><Text className="activity-title">{card.title}</Text><Text className="role">{card.detail}</Text></View><Text className="chevron">›</Text></View>)}</View>}
+
+            {data.dailySpark && <View className={`panel daily-spark-card ${data.dailySpark.bothCompleted ? "complete" : ""}`}><Text className="daily-spark-icon">{data.dailySpark.icon}</Text><View className="daily-spark-copy"><Text className="kicker">今日心动任务</Text><Text className="subtitle">{data.dailySpark.title}</Text><Text className="description small">{data.dailySpark.detail}</Text><Text className="spark-progress">{data.dailySpark.bothCompleted ? "✨ 两个人都完成了" : data.dailySpark.completedByUids.includes(viewer.uid) ? "我已完成，等对方来接力" : `${data.dailySpark.completedByUids.length}/2 人完成`}</Text></View>{!data.dailySpark.completedByUids.includes(viewer.uid) && <Button className="primary" disabled={busy} onClick={() => runAction("complete-daily-spark", {}, "心动任务完成啦")}>我完成了</Button>}</View>}
 
             <View className="panel today-board" onClick={() => setActiveTab("notebook")}><View className="section-heading"><View><Text className="kicker">今天的小本本</Text><Text className="subtitle">两个人都不用靠脑子硬记</Text></View><Text className="board-count">{sharedMemos.length}</Text></View>{sharedMemos.slice(0, 3).map((memo) => <View className="board-row" key={memo.id}><Text>{memo.kind === "event" ? "📅" : memo.kind === "task" ? "✅" : "📝"}</Text><View><Text className="activity-title">{memo.title}</Text><Text className="role">{memo.dueAt ? formatDateTime(memo.dueAt) : "随时都可以完成"}</Text></View><Text className="chevron">›</Text></View>)}{!sharedMemos.length && <Text className="empty compact-empty">还没有共同事项，点这里记下一件。</Text>}</View>
 
@@ -887,7 +858,7 @@ export default function IndexPage() {
 
           {activeTab === "trends" && <>
             <View className="page-heading"><Text className="kicker">共同趋势</Text><Text className="title">认真生活，也看得见变化</Text><Text className="description">曲线只展示你们两个人共享田地里的记录。</Text></View>
-            <View className="panel chart-panel"><View className="section-heading"><View><Text className="subtitle">体重曲线</Text><View className="legend-row">{people.map((person) => <Text key={person.uid}><Text className="legend-dot" style={{ background: person.color }} />{person.nickname}</Text>)}</View></View><View className="range-tabs">{([7, 30, 90] as const).map((range) => <Button key={range} className={trendRange === range ? "active" : ""} onClick={() => setTrendRange(range)}>{range}天</Button>)}</View></View><Canvas canvasId="weightChart" id="weightChart" className="weight-chart" /></View>
+            <View className="panel chart-panel"><View className="section-heading"><View><Text className="subtitle">体重曲线</Text><View className="legend-row">{people.map((person) => <Text key={person.uid}><Text className="legend-dot" style={{ background: person.color }} />{person.nickname}</Text>)}</View></View><View className="range-tabs">{([7, 30, 90] as const).map((range) => <Button key={range} className={trendRange === range ? "active" : ""} onClick={() => setTrendRange(range)}>{range}天</Button>)}</View></View><TrendChart entries={weights} people={people} rangeDays={trendRange} endTime={data.serverTime} /></View>
 
             <View className="people-grid">{people.map((person) => { const own = weights.filter((entry) => entry.ownerUid === person.uid && entry.recordedAt >= Date.now() - trendRange * DAY).sort((left, right) => left.recordedAt - right.recordedAt); const change = own.length > 1 ? own[own.length - 1].weightKg - own[0].weightKg : null; return <View className="stat-card" key={person.uid} style={{ borderColor: person.color }}><Text className="role">{person.nickname} · {trendRange} 天</Text><Text className="stat-large">{change === null ? "--" : `${change > 0 ? "+" : ""}${change.toFixed(1)}`}<Text> kg</Text></Text><Text className="role">区间体重变化</Text></View>; })}</View>
 
@@ -917,11 +888,11 @@ export default function IndexPage() {
           {activeTab === "us" && <>
             <View className="page-heading"><Text className="kicker">我们与设置</Text><Text className="title">把小田地变成你们的样子</Text></View>
 
-            <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <Image src={profileAvatarFileId} mode="aspectFill" /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">相册或拍照均可</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">田地 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
+            <View className="panel"><Text className="kicker">我的资料</Text><Text className="subtitle">昵称、头像和代表色</Text><Input className="field" value={profileNickname} onInput={(event) => setProfileNickname(event.detail.value)} maxlength={12} placeholder="我的昵称" /><View className="custom-avatar-row"><View className="custom-avatar-preview" style={{ background: profileColor }}>{profileAvatarFileId ? <CloudImage fileId={profileAvatarFileId} fallback={profileAvatar} /> : <Text>{profileAvatar}</Text>}</View><View><Text className="activity-title">自定义图片头像</Text><Text className="role">上传后立即进行安全检查</Text><Button className="avatar-upload-button" onClick={chooseProfileImage}>选择图片</Button></View></View><Text className="community-label">田地 Emoji 居民</Text><View className="avatar-grid settings-grid">{avatars.map((choice) => <Button key={choice} className={!profileAvatarFileId && profileAvatar === choice ? "avatar active" : "avatar"} onClick={() => { setProfileAvatar(choice); setProfileAvatarFileId(null); }}>{choice}</Button>)}</View><View className="color-grid">{colors.map((choice) => <Button key={choice} className={profileColor === choice ? "color-dot active" : "color-dot"} style={{ background: choice }} onClick={() => setProfileColor(choice)} />)}</View><Button className="primary" loading={busy} onClick={saveProfile}>保存我的资料</Button></View>
 
             <View className="panel"><Text className="kicker">共同田地</Text><Text className="subtitle">田地名称和相恋日期</Text><Input className="field" value={farmName} onInput={(event) => setFarmName(event.detail.value)} maxlength={16} placeholder="给田地取个名字" /><Picker mode="date" value={togetherSince || dateValue()} end={dateValue()} onChange={(event) => setTogetherSince(String(event.detail.value))}><View className="picker-field settings-picker">💞 {togetherSince || "选择在一起的日期"}</View></Picker><Button className="primary" loading={busy} onClick={saveFarmSettings}>保存共同田地</Button></View>
 
-            <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">别让秤和小马桶等困了</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">打开小程序时检查今日记录</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">到点且今天未记录时提示</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">💞 纪念日提醒</Text><Text className="role">提前 7 天、1 天和当天提示</Text></View><Switch checked={reminders.anniversary.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, anniversary: { ...current.anniversary, enabled: event.detail.value } }))} /></View><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存小程序内提醒</Button><Text className="fine-print">手机日历提醒由系统日历管理；重复点击可能生成重复日程。</Text></View>
+            <View className="panel"><Text className="kicker">每日提醒</Text><Text className="subtitle">别让秤和小马桶等困了</Text><View className="setting-row"><View><Text className="activity-title">⚖️ 称重提醒</Text><Text className="role">云端到点检查，今天称过就不打扰</Text></View><Switch checked={reminders.weight.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.weight.time} onChange={(event) => setReminders((current) => ({ ...current, weight: { ...current.weight, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.weight.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("weight")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">🚽 如厕记录提醒</Text><Text className="role">云端到点检查，今天记过就不打扰</Text></View><Switch checked={reminders.poop.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, enabled: event.detail.value } }))} /></View><Picker mode="time" value={reminders.poop.time} onChange={(event) => setReminders((current) => ({ ...current, poop: { ...current.poop, time: String(event.detail.value) } }))}><View className="reminder-time">每天 {reminders.poop.time}<Text>修改时间 ›</Text></View></Picker><Button className="calendar-button" onClick={() => addDailyCalendarReminder("poop")}>📅 写入手机日历，每天提醒</Button><View className="setting-divider" /><View className="setting-row"><View><Text className="activity-title">💞 纪念日提醒</Text><Text className="role">提前 7 天、1 天和当天提示</Text></View><Switch checked={reminders.anniversary.enabled} color="#7457ff" onChange={(event) => setReminders((current) => ({ ...current, anniversary: { ...current.anniversary, enabled: event.detail.value } }))} /></View><Button className="primary" loading={busy} onClick={saveReminderSettings}>保存定时提醒</Button><Text className="fine-print">微信每授权 1 次只能发送 1 条；可在消息中心补充次数，站内消息不受影响。</Text></View>
 
             <View className="panel notification-settings-shortcut" onClick={() => setActiveTab("inbox")}><Text className="notification-shortcut-icon">💌</Text><View><Text className="kicker">情侣消息与微信提醒</Text><Text className="subtitle compact-title">{unreadCount ? `${unreadCount} 条未读消息` : "管理通知类型、免打扰和提醒次数"}</Text></View><Text className="chevron">›</Text></View>
 
@@ -933,12 +904,19 @@ export default function IndexPage() {
       <View className="tab-bar">
         {([
           ["farm", "🏡", "田地"],
-          ["trends", "📈", "趋势"],
-          ["notebook", "📒", "小本本"],
-          ["together", "🎲", "一起"],
+          ["together", "💞", "相伴"],
           ["village", "🌾", "村庄"],
-          ["us", "⚙️", "我们"],
-        ] as const).map(([key, icon, label]) => <Button key={key} className={activeTab === key ? "tab-item active" : "tab-item"} onClick={() => setActiveTab(key)}><Text>{icon}</Text><Text>{label}</Text></Button>)}
+          ["us", "👤", "我的"],
+        ] as const).map(([key, icon, label]) => {
+          const active = key === "farm"
+            ? ["farm", "trends"].includes(activeTab)
+            : key === "together"
+              ? ["together", "notebook", "anniversaries"].includes(activeTab)
+              : key === "us"
+                ? ["us", "inbox"].includes(activeTab)
+                : activeTab === key;
+          return <Button key={key} className={active ? "tab-item active" : "tab-item"} onClick={() => setActiveTab(key)}><Text>{icon}</Text><Text>{label}</Text></Button>;
+        })}
       </View>
     </View>
   );

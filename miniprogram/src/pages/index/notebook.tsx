@@ -261,7 +261,7 @@ export default function NotebookPanel({ viewer, partner, onChanged }: {
   return (
     <>
       <View className="page-heading notebook-heading">
-        <Text className="kicker">我们俩的小田地 · 0.7.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
         <Text className="title">共同小本本</Text>
         <Text className="description">把约会、采购、家务和那些“别忘啦”放在同一个地方。</Text>
       </View>

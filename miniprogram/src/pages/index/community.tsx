@@ -1,8 +1,8 @@
-import { Button, Image, Input, Switch, Text, Textarea, View } from "@tarojs/components";
+import { Button, Input, Switch, Text, Textarea, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
-/* eslint-disable jsx-a11y/alt-text -- Taro Image does not expose the HTML alt prop. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { cloudCall } from "../../cloud";
+import CloudImage from "../../cloud-image";
 import { deleteCloudFileQuietly, imageUploadErrorMessage, prepareImageForUpload } from "../../media";
 
 type Viewer = {
@@ -119,7 +119,7 @@ function Avatar({
   return (
     <View className={small ? "community-avatar small" : "community-avatar"} style={{ background: color }}>
       {avatarFileId
-        ? <Image className="community-avatar-image" src={avatarFileId} mode="aspectFill" />
+        ? <CloudImage className="community-avatar-image" fileId={avatarFileId} fallback={avatar} />
         : <Text>{avatar}</Text>}
     </View>
   );
@@ -214,6 +214,11 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
         cloudPath: `community/${viewer.uid}/${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`,
         filePath,
       });
+      const moderation = await cloudCall("moderate-upload", { fileId: uploaded.fileID, kind: "community" });
+      if (moderation.status !== 200) {
+        await deleteCloudFileQuietly(uploaded.fileID);
+        throw new Error(String(moderation.data.error || "图片安全检查暂时没有响应，请稍后再试。"));
+      }
       const previousFileId = postImageFileId;
       setPostImageFileId(uploaded.fileID);
       await deleteCloudFileQuietly(previousFileId);
@@ -292,7 +297,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
   return (
     <>
       <View className="page-heading community-heading">
-        <Text className="kicker">我们俩的小田地 · 0.5.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
         <Text className="title">来村口看看大家</Text>
         <Text className="description">只有主动发布和勾选的内容会公开，体重和如厕原始记录永远留在两个人的田地里。</Text>
       </View>
@@ -326,7 +331,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
         </View>
         <View className="community-topic-picker">{topicChoices.map(([key, label]) => <Button key={key} className={topic === key ? "active" : ""} onClick={() => setTopic(key)}>{label}</Button>)}</View>
         <Textarea className="textarea community-textarea" value={draft} onInput={(event) => setDraft(event.detail.value)} maxlength={300} placeholder="分享一件今天发生的小事，或者问问其他情侣……" />
-        {postImageFileId && <View className="community-image-preview"><Image src={postImageFileId} mode="aspectFill" /><Button onClick={removeDraftImage}>移除</Button></View>}
+        {postImageFileId && <View className="community-image-preview"><CloudImage fileId={postImageFileId} fallback="照片" /><Button onClick={removeDraftImage}>移除</Button></View>}
         <View className="composer-tools"><Button onClick={choosePostImage}>📷 {postImageFileId ? "换照片" : "加一张照片"}</Button><Text>{draft.length}/300</Text></View>
         {availableShareStats.length > 0 && <><Text className="community-label">附上一张趣味数据卡（选填）</Text><View className="community-stat-picker"><Button className={!shareStatKey ? "active" : ""} onClick={() => setShareStatKey("")}>不附加</Button>{availableShareStats.map((stat) => <Button key={stat.key} className={shareStatKey === stat.key ? "active" : ""} onClick={() => setShareStatKey(stat.key)}>{stat.label}</Button>)}</View></>}
         <Button className="primary" loading={busy} onClick={publishPost}>发布到村口</Button>
@@ -348,7 +353,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
           </View>
           <Text className="post-topic">{topicChoices.find(([key]) => key === post.topic)?.[1] || "🌱 日常"}</Text>
           <Text className="post-content">{post.content}</Text>
-          {post.imageFileId && <Image className="post-image" src={post.imageFileId} mode="aspectFill" />}
+          {post.imageFileId && <CloudImage className="post-image" fileId={post.imageFileId} fallback="照片正在加载" />}
           {post.shareStat && <View className="shared-stat-card"><Text>{post.shareStat.label}</Text><Text className="shared-stat-value">{post.shareStat.value}<Text>{post.shareStat.suffix}</Text></Text><Text>由田地主人主动公开</Text></View>}
           <View className="post-actions">
             <Button className={post.likedByViewer ? "liked" : ""} disabled={!communityActive || busy} onClick={() => action("toggle-community-like", { postId: post.id }, post.likedByViewer ? "收回小花" : "送出小花")}>{post.likedByViewer ? "🌸" : "🌼"} {post.likeCount}</Button>
