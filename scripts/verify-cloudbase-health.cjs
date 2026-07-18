@@ -49,7 +49,13 @@ process.stdin.on("end", () => {
     const games = Array.isArray(matchedPayload?.games) ? matchedPayload.games : [];
     const required = ["gomoku", "tic-tac-toe", "rps"];
     if (!required.every((game) => games.includes(game))) {
-      console.error("CloudBase games health check is missing 0.10.0 capabilities:", games);
+      console.error("CloudBase games health check is missing 0.11.0 games:", games);
+      process.exit(1);
+    }
+    const capabilities = Array.isArray(matchedPayload?.capabilities) ? matchedPayload.capabilities : [];
+    const requiredCapabilities = ["live-write-check", "persistent-score", "manual-invite", "quiet-moves"];
+    if (matchedPayload?.version !== "0.11.0" || !requiredCapabilities.every((item) => capabilities.includes(item))) {
+      console.error("CloudBase games health check is missing 0.11.0 runtime capabilities:", matchedPayload);
       process.exit(1);
     }
   }

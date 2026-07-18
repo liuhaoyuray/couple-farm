@@ -195,7 +195,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -203,7 +203,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
 });
 
 test("verifies the private village schema without a user session", async () => {
@@ -211,7 +211,7 @@ test("verifies the private village schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "village");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
 });
 
 test("verifies the partner notification schema without a user session", async () => {
@@ -219,7 +219,7 @@ test("verifies the partner notification schema without a user session", async ()
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "notifications");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
   assert.equal(result.data.templateConfigured, true);
 });
 
@@ -228,15 +228,16 @@ test("verifies the double-player game schema without a user session", async () =
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "games");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
   assert.deepEqual(result.data.games, ["gomoku", "tic-tac-toe", "rps"]);
+  assert.deepEqual(result.data.capabilities, ["live-write-check", "persistent-score", "manual-invite", "quiet-moves"]);
 });
 
 test("verifies the full UGC content-safety contract without a user session", async () => {
   const result = await invoke(null, "content-safety-health");
   assert.equal(result.status, 200);
   assert.equal(result.data.service, "content-safety");
-  assert.equal(result.data.version, "0.10.0");
+  assert.equal(result.data.version, "0.11.0");
   assert.deepEqual(result.data.apis, ["security.msgSecCheck", "security.imgSecCheck"]);
   assert.ok(result.data.coverage.includes("avatar-image"));
   assert.ok(result.data.coverage.includes("village-post-image-text"));
@@ -524,6 +525,7 @@ test("delivers partner activity to the inbox and consumes one-time WeChat remind
 });
 
 test("plays a server-validated couple gomoku round and notifies the partner", async () => {
+  const pushedBefore = sentSubscriptionMessages.length;
   const started = await invoke("browser-a", "start-gomoku", {}, firstToken);
   assert.equal(started.status, 201);
   assert.equal(started.data.game.status, "active");
@@ -582,9 +584,19 @@ test("plays a server-validated couple gomoku round and notifies the partner", as
   assert.equal(winningMove.data.game.status, "won");
   assert.equal(winningMove.data.game.winnerUid, winningMove.data.game.blackUid);
   assert.equal(winningMove.data.game.moveCount, 9);
+  assert.equal(winningMove.data.game.score.wins[winningMove.data.game.winnerUid], 1);
+  assert.equal(winningMove.data.game.score.rounds, 1);
 
   const partnerCenter = await invoke("browser-b", "notification-center", {}, secondToken);
   assert.ok(partnerCenter.data.items.some((item) => item.type === "game_result" && item.targetTab === "games"));
+  assert.equal(partnerCenter.data.items.some((item) => item.type === "game_move" || item.type === "game_started"), false);
+  assert.equal(partnerCenter.data.items.find((item) => item.type === "game_result")?.wechatStatus, "disabled");
+  assert.equal(sentSubscriptionMessages.length, pushedBefore);
+
+  const nextRound = await invoke("browser-a", "start-gomoku", {}, firstToken);
+  assert.equal(nextRound.status, 201);
+  assert.equal(nextRound.data.game.blackUid, started.data.game.whiteUid);
+  assert.equal(nextRound.data.game.score.wins[winningMove.data.game.winnerUid], 1);
 });
 
 test("plays a fast tic-tac-toe round with idempotent moves", async () => {
@@ -611,6 +623,8 @@ test("plays a fast tic-tac-toe round with idempotent moves", async () => {
   assert.equal(game.status, "won");
   assert.equal(game.winnerUid, game.xUid);
   assert.equal(game.moveCount, 5);
+  assert.equal(game.score.wins[game.xUid], 1);
+  assert.equal(game.score.rounds, 1);
 
   const replayed = await invoke("browser-a", "play-tic-tac-toe", {
     position: 2,
@@ -620,6 +634,11 @@ test("plays a fast tic-tac-toe round with idempotent moves", async () => {
   assert.equal(replayed.status, 200);
   assert.equal(replayed.data.replayed, true);
   assert.equal(replayed.data.game.moveCount, 5);
+
+  const nextRound = await invoke("browser-a", "start-tic-tac-toe", {}, firstToken);
+  assert.equal(nextRound.status, 201);
+  assert.equal(nextRound.data.game.xUid, started.data.game.oUid);
+  assert.equal(nextRound.data.game.score.wins[game.xUid], 1);
 });
 
 test("keeps rock-paper-scissors choices secret until both partners answer", async () => {
@@ -649,11 +668,28 @@ test("keeps rock-paper-scissors choices secret until both partners answer", asyn
   assert.equal(secondChoice.data.game.status, "complete");
   assert.equal(secondChoice.data.game.revealed, true);
   assert.equal(secondChoice.data.game.winnerUid, secondChoice.data.game.playerOneUid);
+  assert.equal(secondChoice.data.game.score.wins[secondChoice.data.game.playerOneUid], 1);
+  assert.equal(secondChoice.data.game.score.rounds, 1);
 
   const finalHub = await invoke("browser-a", "games-hub", {}, firstToken);
   assert.equal(finalHub.data.games.rps.revealed, true);
   assert.equal(finalHub.data.games.rps.choices[finalHub.data.games.rps.playerOneUid], "rock");
   assert.equal(finalHub.data.games.rps.choices[finalHub.data.games.rps.playerTwoUid], "scissors");
+});
+
+test("sends game reminders only when explicitly requested and rate limits them", async () => {
+  const pushedBefore = sentSubscriptionMessages.length;
+  const invited = await invoke("browser-a", "invite-game", { game: "gomoku" }, firstToken);
+  assert.equal(invited.status, 201);
+  assert.equal(invited.data.cooldownSeconds, 1800);
+
+  const repeated = await invoke("browser-a", "invite-game", { game: "gomoku" }, firstToken);
+  assert.equal(repeated.status, 429);
+  assert.equal(repeated.data.code, "GAME_INVITE_RATE_LIMITED");
+
+  const partnerCenter = await invoke("browser-b", "notification-center", {}, secondToken);
+  assert.ok(partnerCenter.data.items.some((item) => item.type === "game_invite" && item.targetTab === "games"));
+  assert.equal(sentSubscriptionMessages.length, pushedBefore);
 });
 
 test("supports editable profiles, farm settings, reminders and anniversaries", async () => {

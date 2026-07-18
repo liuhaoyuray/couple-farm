@@ -263,7 +263,7 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">我们俩的小田地 · 0.10.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.11.0</Text>
         <Text className="title">{error ? "小田地打了个盹" : "正在打开我们俩的小田地"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
@@ -749,7 +749,7 @@ export default function IndexPage() {
 
             {soloTab === "farm" && <>
               <View className="farm-hero solo-hero">
-                <View><Text className="kicker">我们俩的小田地 · 0.10.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
+                <View><Text className="kicker">我们俩的小田地 · 0.11.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
                 <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🌷</Text></View>
               </View>
 
@@ -820,7 +820,7 @@ export default function IndexPage() {
 
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">我们俩的小田地 · 0.10.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <View><Text className="kicker">我们俩的小田地 · 0.11.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>

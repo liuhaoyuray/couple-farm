@@ -297,7 +297,7 @@ export default function CommunityPanel({ viewer, couple }: { viewer: Viewer; cou
   return (
     <>
       <View className="page-heading community-heading">
-        <Text className="kicker">我们俩的小田地 · 0.10.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.11.0</Text>
         <Text className="title">来村口看看大家</Text>
         <Text className="description">只有主动发布和勾选的内容会公开，体重和如厕原始记录永远留在两个人的田地里。</Text>
       </View>
