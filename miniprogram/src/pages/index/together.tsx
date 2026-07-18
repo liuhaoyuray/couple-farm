@@ -207,7 +207,7 @@ export default function TogetherPanel({
   return (
     <>
       <View className="page-heading together-heading">
-        <Text className="kicker">我们俩的小田地 · 0.9.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.10.0</Text>
         <Text className="title">今天，一起做点什么</Text>
         <Text className="description">每天一分钟对个暗号，吃什么也不用再互相说“随便”。</Text>
       </View>
@@ -263,7 +263,7 @@ export default function TogetherPanel({
 
       <View className="panel memory-shortcut" onClick={onOpenAnniversaries}><Text className="memory-icon">💞</Text><View><Text className="kicker">纪念日与约会计划</Text><Text className="subtitle compact-title">去照顾你们种下的重要日子</Text></View><Text className="chevron">›</Text></View>
 
-      <View className="panel memory-shortcut game-shortcut" onClick={onOpenGames}><Text className="memory-icon">🎮</Text><View><Text className="kicker">两个人一起玩</Text><Text className="subtitle compact-title">五子棋已经摆好，等你们开局</Text></View><Text className="chevron">›</Text></View>
+      <View className="panel memory-shortcut game-shortcut" onClick={onOpenGames}><Text className="memory-icon">🎮</Text><View><Text className="kicker">两个人一起玩</Text><Text className="subtitle compact-title">三款双人小游戏，随时开一局</Text></View><Text className="chevron">›</Text></View>
 
       <View className={`panel membership-card ${plus ? "active" : ""}`}>
         <View className="membership-title-row"><View><Text className="kicker">商业化内测 · 不会自动扣费</Text><Text className="subtitle">💗 {hub.membership.productName}</Text></View><Text className="membership-badge">{plus ? "体验中" : "FREE"}</Text></View>

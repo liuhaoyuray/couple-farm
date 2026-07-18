@@ -55,6 +55,20 @@ function createFakeCloudbase() {
         }
         return { data: documents.slice(state.skip, state.skip + state.limit).map((item) => ({ ...item })) };
       },
+      async update(fields) {
+        if (!collections.has(name)) throw new Error("DATABASE_COLLECTION_NOT_EXIST");
+        let updated = 0;
+        for (const [id, document] of collections.get(name).entries()) {
+          const matches = Object.entries(state.condition).every(([field, expected]) => {
+            if (expected && expected.operation === "gte") return document[field] >= expected.value;
+            return document[field] === expected;
+          });
+          if (!matches) continue;
+          collections.get(name).set(id, { ...document, ...fields, _id: id });
+          updated += 1;
+        }
+        return { updated };
+      },
       async add(fields) {
         if (!collections.has(name)) throw new Error("DATABASE_COLLECTION_NOT_EXIST");
         const id = String(nextId++);
@@ -181,7 +195,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.9.0");
+  assert.equal(result.data.version, "0.10.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -189,7 +203,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.9.0");
+  assert.equal(result.data.version, "0.10.0");
 });
 
 test("verifies the private village schema without a user session", async () => {
@@ -197,7 +211,7 @@ test("verifies the private village schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "village");
-  assert.equal(result.data.version, "0.9.0");
+  assert.equal(result.data.version, "0.10.0");
 });
 
 test("verifies the partner notification schema without a user session", async () => {
@@ -205,7 +219,7 @@ test("verifies the partner notification schema without a user session", async ()
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "notifications");
-  assert.equal(result.data.version, "0.9.0");
+  assert.equal(result.data.version, "0.10.0");
   assert.equal(result.data.templateConfigured, true);
 });
 
@@ -214,15 +228,15 @@ test("verifies the double-player game schema without a user session", async () =
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "games");
-  assert.equal(result.data.version, "0.9.0");
-  assert.deepEqual(result.data.games, ["gomoku"]);
+  assert.equal(result.data.version, "0.10.0");
+  assert.deepEqual(result.data.games, ["gomoku", "tic-tac-toe", "rps"]);
 });
 
 test("verifies the full UGC content-safety contract without a user session", async () => {
   const result = await invoke(null, "content-safety-health");
   assert.equal(result.status, 200);
   assert.equal(result.data.service, "content-safety");
-  assert.equal(result.data.version, "0.9.0");
+  assert.equal(result.data.version, "0.10.0");
   assert.deepEqual(result.data.apis, ["security.msgSecCheck", "security.imgSecCheck"]);
   assert.ok(result.data.coverage.includes("avatar-image"));
   assert.ok(result.data.coverage.includes("village-post-image-text"));
@@ -529,17 +543,31 @@ test("plays a server-validated couple gomoku round and notifies the partner", as
   assert.equal(outOfTurn.data.code, "GOMOKU_NOT_YOUR_TURN");
 
   for (let column = 0; column < 4; column += 1) {
+    const blackMoveId = `gomoku-black-${column}`;
     const black = await invoke("browser-a", "play-gomoku", {
       row: 7,
       col: column,
       revision: game.revision,
+      clientMoveId: blackMoveId,
     }, firstToken);
     assert.equal(black.status, 200);
     game = black.data.game;
+    if (column === 0) {
+      const replayed = await invoke("browser-a", "play-gomoku", {
+        row: 7,
+        col: column,
+        revision: game.revision,
+        clientMoveId: blackMoveId,
+      }, firstToken);
+      assert.equal(replayed.status, 200);
+      assert.equal(replayed.data.replayed, true);
+      assert.equal(replayed.data.game.moveCount, game.moveCount);
+    }
     const white = await invoke("browser-b", "play-gomoku", {
       row: 8,
       col: column,
       revision: game.revision,
+      clientMoveId: `gomoku-white-${column}`,
     }, secondToken);
     assert.equal(white.status, 200);
     game = white.data.game;
@@ -557,6 +585,75 @@ test("plays a server-validated couple gomoku round and notifies the partner", as
 
   const partnerCenter = await invoke("browser-b", "notification-center", {}, secondToken);
   assert.ok(partnerCenter.data.items.some((item) => item.type === "game_result" && item.targetTab === "games"));
+});
+
+test("plays a fast tic-tac-toe round with idempotent moves", async () => {
+  const started = await invoke("browser-a", "start-tic-tac-toe", {}, firstToken);
+  assert.equal(started.status, 201);
+  assert.deepEqual(started.data.game.board, Array(9).fill(0));
+  let game = started.data.game;
+  const moves = [
+    ["browser-a", firstToken, 0, "tic-move-a-0"],
+    ["browser-b", secondToken, 3, "tic-move-b-3"],
+    ["browser-a", firstToken, 1, "tic-move-a-1"],
+    ["browser-b", secondToken, 4, "tic-move-b-4"],
+    ["browser-a", firstToken, 2, "tic-move-a-2"],
+  ];
+  for (const [caller, token, position, clientMoveId] of moves) {
+    const result = await invoke(caller, "play-tic-tac-toe", {
+      position,
+      revision: game.revision,
+      clientMoveId,
+    }, token);
+    assert.equal(result.status, 200);
+    game = result.data.game;
+  }
+  assert.equal(game.status, "won");
+  assert.equal(game.winnerUid, game.xUid);
+  assert.equal(game.moveCount, 5);
+
+  const replayed = await invoke("browser-a", "play-tic-tac-toe", {
+    position: 2,
+    revision: game.revision,
+    clientMoveId: "tic-move-a-2",
+  }, firstToken);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.data.replayed, true);
+  assert.equal(replayed.data.game.moveCount, 5);
+});
+
+test("keeps rock-paper-scissors choices secret until both partners answer", async () => {
+  const started = await invoke("browser-a", "start-rps", {}, firstToken);
+  assert.equal(started.status, 201);
+  assert.equal(started.data.game.revealed, false);
+
+  const firstChoice = await invoke("browser-a", "choose-rps", {
+    choice: "rock",
+    clientActionId: "rps-choice-a-rock",
+  }, firstToken);
+  assert.equal(firstChoice.status, 200);
+  assert.equal(firstChoice.data.game.myChoice, "rock");
+  assert.deepEqual(firstChoice.data.game.choices, {});
+
+  const partnerHub = await invoke("browser-b", "games-hub", {}, secondToken);
+  assert.equal(partnerHub.status, 200);
+  assert.equal(partnerHub.data.games.rps.partnerReady, true);
+  assert.equal(partnerHub.data.games.rps.myChoice, null);
+  assert.deepEqual(partnerHub.data.games.rps.choices, {});
+
+  const secondChoice = await invoke("browser-b", "choose-rps", {
+    choice: "scissors",
+    clientActionId: "rps-choice-b-scissors",
+  }, secondToken);
+  assert.equal(secondChoice.status, 200);
+  assert.equal(secondChoice.data.game.status, "complete");
+  assert.equal(secondChoice.data.game.revealed, true);
+  assert.equal(secondChoice.data.game.winnerUid, secondChoice.data.game.playerOneUid);
+
+  const finalHub = await invoke("browser-a", "games-hub", {}, firstToken);
+  assert.equal(finalHub.data.games.rps.revealed, true);
+  assert.equal(finalHub.data.games.rps.choices[finalHub.data.games.rps.playerOneUid], "rock");
+  assert.equal(finalHub.data.games.rps.choices[finalHub.data.games.rps.playerTwoUid], "scissors");
 });
 
 test("supports editable profiles, farm settings, reminders and anniversaries", async () => {

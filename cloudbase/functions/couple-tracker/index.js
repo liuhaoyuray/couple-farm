@@ -161,6 +161,8 @@ const nudgePresets = {
 };
 const VILLAGE_MEMBER_LIMIT = 24;
 const GOMOKU_SIZE = 15;
+const TIC_TAC_TOE_SIZE = 3;
+const RPS_CHOICES = ["rock", "paper", "scissors"];
 const MEDIA_URL_MAX_AGE = 60 * 60;
 const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
@@ -791,6 +793,16 @@ async function updateDocument(name, id, fields) {
   await db.collection(name).doc(String(id)).update(fields);
   const document = await getDocument(name, id);
   return document || { id: String(id), ...fields };
+}
+
+async function compareAndUpdateDocument(name, id, expectedRevision, fields) {
+  const result = await db.collection(name).where({
+    _id: String(id),
+    revision: Number(expectedRevision),
+  }).update(fields);
+  const updated = Number(result?.updated ?? result?.modified ?? 0);
+  if (updated < 1) return null;
+  return getDocument(name, id);
 }
 
 async function addDocument(name, fields) {
@@ -1816,6 +1828,7 @@ async function createNotificationForRecipient(user, couple, recipient, details) 
   const type = cleanText(details.type, 32);
   const preferenceKey = notificationPreferenceByType[type];
   const preferences = normalizeNotificationPreferences(recipient.notificationPreferences);
+  const deferWechat = Boolean(details.deferWechat);
   if (!preferenceKey || preferences.events[preferenceKey] === false) return null;
   const referenceId = cleanText(details.referenceId, 128) || randomId(8);
   const id = `notice_${sha256(`${couple.id}:${recipient.uid}:${type}:${referenceId}`).slice(0, 44)}`;
@@ -1836,19 +1849,20 @@ async function createNotificationForRecipient(user, couple, recipient, details) 
     referenceId,
     visible: preferences.inApp,
     readAt: preferences.inApp ? null : now,
-    wechatStatus: preferences.wechat ? "preparing" : "disabled",
+    wechatStatus: preferences.wechat ? (deferWechat ? "pending" : "preparing") : "disabled",
     createdAt: now,
     updatedAt: now,
   });
-  if (preferences.wechat) {
+  if (preferences.wechat && !deferWechat) {
     const delivery = await sendActivityNotification(notification, recipient, preferences, "partner-event");
-    await updateDocument("in_app_notifications", id, {
+    const updated = await updateDocument("in_app_notifications", id, {
       wechatStatus: delivery.status,
       wechatSentAt: delivery.sentAt || null,
       updatedAt: Date.now(),
     });
+    return publicNotification(updated);
   }
-  return publicNotification(await getDocument("in_app_notifications", id));
+  return publicNotification(notification);
 }
 
 function notificationSpaceId(user) {
@@ -2283,11 +2297,40 @@ function gomokuGameId(coupleId) {
   return `gomoku_${sha256(coupleId).slice(0, 44)}`;
 }
 
-function normalizeGomokuBoard(value) {
-  if (!Array.isArray(value) || value.length !== GOMOKU_SIZE * GOMOKU_SIZE) {
-    return Array(GOMOKU_SIZE * GOMOKU_SIZE).fill(0);
+function ticTacToeGameId(coupleId) {
+  return `tic_tac_toe_${sha256(coupleId).slice(0, 36)}`;
+}
+
+function rpsGameId(coupleId) {
+  return `rps_${sha256(coupleId).slice(0, 44)}`;
+}
+
+function normalizeBoardState(value, size, legacyValue) {
+  const length = size * size;
+  if (typeof value === "string" && value.length === length && /^[012]+$/.test(value)) return value;
+  const source = Array.isArray(value) ? value : Array.isArray(legacyValue) ? legacyValue : [];
+  if (source.length !== length) return "0".repeat(length);
+  return source.map((cell) => cell === 1 || cell === 2 || cell === "1" || cell === "2" ? String(cell) : "0").join("");
+}
+
+function boardArray(boardState, size) {
+  return [...normalizeBoardState(boardState, size)].map((cell) => Number(cell));
+}
+
+function gameActionId(value) {
+  const actionId = cleanText(value, 64);
+  return /^[a-zA-Z0-9:_-]{8,64}$/.test(actionId) ? actionId : randomId(10);
+}
+
+async function updateGameWithRevision(id, revision, fields) {
+  try {
+    return await compareAndUpdateDocument("couple_games", id, revision, fields);
+  } catch (error) {
+    console.warn("game compare-and-update fallback", { id, revision, ...errorDetails(error) });
+    const current = await getDocument("couple_games", id);
+    if (!current || Number(current.revision) !== Number(revision)) return null;
+    return updateDocument("couple_games", id, fields);
   }
-  return value.map((cell) => cell === 1 || cell === 2 ? cell : 0);
 }
 
 function publicGomokuGame(game, couple) {
@@ -2299,7 +2342,7 @@ function publicGomokuGame(game, couple) {
   return {
     id: game.id,
     size: GOMOKU_SIZE,
-    board: normalizeGomokuBoard(game.board),
+    board: boardArray(normalizeBoardState(game.boardState, GOMOKU_SIZE, game.board), GOMOKU_SIZE),
     blackUid,
     whiteUid,
     currentTurnUid: status === "active" && memberUids.includes(game.currentTurnUid) ? game.currentTurnUid : null,
@@ -2309,6 +2352,65 @@ function publicGomokuGame(game, couple) {
     lastMove: game.lastMove && Number.isInteger(game.lastMove.row) && Number.isInteger(game.lastMove.col)
       ? { row: game.lastMove.row, col: game.lastMove.col, uid: game.lastMove.uid, at: Number(game.lastMove.at) || null }
       : null,
+    round: Math.max(1, Number(game.round) || 1),
+    revision: Math.max(1, Number(game.revision) || 1),
+    createdAt: Number(game.createdAt) || Date.now(),
+    updatedAt: Number(game.updatedAt) || Number(game.createdAt) || Date.now(),
+  };
+}
+
+function publicTicTacToeGame(game, couple) {
+  if (!game) return null;
+  const memberUids = Array.isArray(couple?.memberUids) ? couple.memberUids : [];
+  const xUid = memberUids.includes(game.xUid) ? game.xUid : memberUids[0] || null;
+  const oUid = memberUids.includes(game.oUid) ? game.oUid : memberUids.find((uid) => uid !== xUid) || null;
+  const status = ["active", "won", "draw", "resigned"].includes(game.status) ? game.status : "active";
+  return {
+    id: game.id,
+    size: TIC_TAC_TOE_SIZE,
+    board: boardArray(normalizeBoardState(game.boardState, TIC_TAC_TOE_SIZE, game.board), TIC_TAC_TOE_SIZE),
+    xUid,
+    oUid,
+    currentTurnUid: status === "active" && memberUids.includes(game.currentTurnUid) ? game.currentTurnUid : null,
+    winnerUid: memberUids.includes(game.winnerUid) ? game.winnerUid : null,
+    status,
+    moveCount: Number(game.moveCount) || 0,
+    lastMove: game.lastMove && Number.isInteger(game.lastMove.position)
+      ? { position: game.lastMove.position, uid: game.lastMove.uid, at: Number(game.lastMove.at) || null }
+      : null,
+    round: Math.max(1, Number(game.round) || 1),
+    revision: Math.max(1, Number(game.revision) || 1),
+    createdAt: Number(game.createdAt) || Date.now(),
+    updatedAt: Number(game.updatedAt) || Number(game.createdAt) || Date.now(),
+  };
+}
+
+function rpsWinner(choiceOne, choiceTwo, playerOneUid, playerTwoUid) {
+  if (!choiceOne || !choiceTwo || choiceOne === choiceTwo) return null;
+  const oneWins = (choiceOne === "rock" && choiceTwo === "scissors")
+    || (choiceOne === "paper" && choiceTwo === "rock")
+    || (choiceOne === "scissors" && choiceTwo === "paper");
+  return oneWins ? playerOneUid : playerTwoUid;
+}
+
+function publicRpsGame(game, couple, viewerUid) {
+  if (!game) return null;
+  const memberUids = Array.isArray(couple?.memberUids) ? couple.memberUids : [];
+  const playerOneUid = memberUids.includes(game.playerOneUid) ? game.playerOneUid : memberUids[0] || null;
+  const playerTwoUid = memberUids.includes(game.playerTwoUid) ? game.playerTwoUid : memberUids.find((uid) => uid !== playerOneUid) || null;
+  const choices = game.choices && typeof game.choices === "object" ? game.choices : {};
+  const revealed = RPS_CHOICES.includes(choices[playerOneUid]) && RPS_CHOICES.includes(choices[playerTwoUid]);
+  const partnerUid = memberUids.find((uid) => uid !== viewerUid) || null;
+  return {
+    id: game.id,
+    playerOneUid,
+    playerTwoUid,
+    status: revealed || game.status === "complete" ? "complete" : "active",
+    myChoice: RPS_CHOICES.includes(choices[viewerUid]) ? choices[viewerUid] : null,
+    partnerReady: Boolean(partnerUid && RPS_CHOICES.includes(choices[partnerUid])),
+    revealed,
+    choices: revealed ? { [playerOneUid]: choices[playerOneUid], [playerTwoUid]: choices[playerTwoUid] } : {},
+    winnerUid: revealed ? rpsWinner(choices[playerOneUid], choices[playerTwoUid], playerOneUid, playerTwoUid) : null,
     round: Math.max(1, Number(game.round) || 1),
     revision: Math.max(1, Number(game.revision) || 1),
     createdAt: Number(game.createdAt) || Date.now(),
@@ -2347,6 +2449,25 @@ async function gomokuHub(user) {
   });
 }
 
+async function gamesHub(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const [gomoku, ticTacToe, rps] = await Promise.all([
+    getDocument("couple_games", gomokuGameId(relationship.couple.id)),
+    getDocument("couple_games", ticTacToeGameId(relationship.couple.id)),
+    getDocument("couple_games", rpsGameId(relationship.couple.id)),
+  ]);
+  return response(200, {
+    games: {
+      gomoku: publicGomokuGame(gomoku, relationship.couple),
+      ticTacToe: publicTicTacToeGame(ticTacToe, relationship.couple),
+      rps: publicRpsGame(rps, relationship.couple, user.uid),
+    },
+    players: [publicUser(user), publicUser(relationship.partner)],
+    serverTime: Date.now(),
+  });
+}
+
 async function startGomoku(user) {
   const relationship = await requireCouple(user);
   if (relationship.error) return relationship.error;
@@ -2360,7 +2481,7 @@ async function startGomoku(user) {
     coupleId: relationship.couple.id,
     type: "gomoku",
     size: GOMOKU_SIZE,
-    board: Array(GOMOKU_SIZE * GOMOKU_SIZE).fill(0),
+    boardState: "0".repeat(GOMOKU_SIZE * GOMOKU_SIZE),
     blackUid: user.uid,
     whiteUid: relationship.partner.uid,
     currentTurnUid: user.uid,
@@ -2381,6 +2502,7 @@ async function startGomoku(user) {
     body: `${cleanText(user.nickname, 10)} 邀请你来下一盘，黑棋先行`,
     targetTab: "games",
     referenceId: `${id}:${game.round}`,
+    deferWechat: true,
   });
   return response(201, { game: publicGomokuGame(game, relationship.couple), resumed: false });
 }
@@ -2390,6 +2512,10 @@ async function playGomoku(user, payload) {
   if (relationship.error) return relationship.error;
   const id = gomokuGameId(relationship.couple.id);
   const game = await getDocument("couple_games", id);
+  const clientMoveId = gameActionId(payload.clientMoveId);
+  if (game?.lastMove?.clientMoveId === clientMoveId && game.lastMove.uid === user.uid) {
+    return response(200, { game: publicGomokuGame(game, relationship.couple), replayed: true });
+  }
   if (!game || game.status !== "active") return jsonError("这一局还没有开始或已经结束。", 409, "GOMOKU_NOT_ACTIVE");
   const expectedRevision = Number(payload.revision);
   if (!Number.isInteger(expectedRevision)) return jsonError("棋盘版本不正确，请刷新后再落子。", 400, "GOMOKU_REVISION_REQUIRED");
@@ -2402,7 +2528,7 @@ async function playGomoku(user, payload) {
   if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row >= GOMOKU_SIZE || col < 0 || col >= GOMOKU_SIZE) {
     return jsonError("这个落子位置不正确。", 400, "GOMOKU_POSITION_INVALID");
   }
-  const board = normalizeGomokuBoard(game.board);
+  const board = [...normalizeBoardState(game.boardState, GOMOKU_SIZE, game.board)].map(Number);
   const index = row * GOMOKU_SIZE + col;
   if (board[index] !== 0) return jsonError("这里已经有棋子啦。", 409, "GOMOKU_POSITION_TAKEN");
   const stone = game.blackUid === user.uid ? 1 : 2;
@@ -2412,17 +2538,24 @@ async function playGomoku(user, payload) {
   const draw = !won && moveCount >= GOMOKU_SIZE * GOMOKU_SIZE;
   const now = Date.now();
   const status = won ? "won" : draw ? "draw" : "active";
-  const updated = await updateDocument("couple_games", id, {
-    board,
+  const updated = await updateGameWithRevision(id, game.revision, {
+    boardState: board.join(""),
     status,
     winnerUid: won ? user.uid : null,
     currentTurnUid: status === "active" ? relationship.partner.uid : null,
     moveCount,
-    lastMove: { row, col, uid: user.uid, at: now },
+    lastMove: { row, col, uid: user.uid, at: now, clientMoveId },
     revision: Number(game.revision || 0) + 1,
     finishedAt: status === "active" ? null : now,
     updatedAt: now,
   });
+  if (!updated) {
+    const latest = await getDocument("couple_games", id);
+    if (latest?.lastMove?.clientMoveId === clientMoveId && latest.lastMove.uid === user.uid) {
+      return response(200, { game: publicGomokuGame(latest, relationship.couple), replayed: true });
+    }
+    return jsonError("棋盘刚刚更新，已经帮你同步，请再落一次。", 409, "GOMOKU_STALE_BOARD");
+  }
   await bestEffortPartnerNotification(user, relationship, {
     type: status === "active" ? "game_move" : "game_result",
     icon: status === "active" ? (stone === 1 ? "⚫" : "⚪") : won ? "🏆" : "🤝",
@@ -2432,8 +2565,217 @@ async function playGomoku(user, payload) {
       : won ? `${cleanText(user.nickname, 10)} 连成了五子，再来一局吗？` : "棋盘下满了，再开一局吧",
     targetTab: "games",
     referenceId: `${id}:${updated.revision}`,
+    deferWechat: status === "active",
   });
   return response(200, { game: publicGomokuGame(updated, relationship.couple) });
+}
+
+function ticTacToeHasLine(board, stone) {
+  const lines = [
+    [0, 1, 2], [3, 4, 5], [6, 7, 8],
+    [0, 3, 6], [1, 4, 7], [2, 5, 8],
+    [0, 4, 8], [2, 4, 6],
+  ];
+  return lines.some((line) => line.every((position) => board[position] === stone));
+}
+
+async function startTicTacToe(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = ticTacToeGameId(relationship.couple.id);
+  const existing = await getDocument("couple_games", id);
+  if (existing?.status === "active") {
+    return response(200, { game: publicTicTacToeGame(existing, relationship.couple), resumed: true });
+  }
+  const now = Date.now();
+  const game = await setDocument("couple_games", id, {
+    coupleId: relationship.couple.id,
+    type: "tic_tac_toe",
+    size: TIC_TAC_TOE_SIZE,
+    boardState: "0".repeat(TIC_TAC_TOE_SIZE * TIC_TAC_TOE_SIZE),
+    xUid: user.uid,
+    oUid: relationship.partner.uid,
+    currentTurnUid: user.uid,
+    winnerUid: null,
+    status: "active",
+    moveCount: 0,
+    lastMove: null,
+    round: Math.max(0, Number(existing?.round) || 0) + 1,
+    revision: Math.max(0, Number(existing?.revision) || 0) + 1,
+    createdAt: existing?.createdAt || now,
+    startedAt: now,
+    updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "game_started",
+    icon: "❎",
+    title: "井字棋开局啦",
+    body: `${cleanText(user.nickname, 10)} 邀请你来一局三连棋`,
+    targetTab: "games",
+    referenceId: `${id}:${game.round}`,
+    deferWechat: true,
+  });
+  return response(201, { game: publicTicTacToeGame(game, relationship.couple), resumed: false });
+}
+
+async function playTicTacToe(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = ticTacToeGameId(relationship.couple.id);
+  const game = await getDocument("couple_games", id);
+  const clientMoveId = gameActionId(payload.clientMoveId);
+  if (game?.lastMove?.clientMoveId === clientMoveId && game.lastMove.uid === user.uid) {
+    return response(200, { game: publicTicTacToeGame(game, relationship.couple), replayed: true });
+  }
+  if (!game || game.status !== "active") return jsonError("这一局还没有开始或已经结束。", 409, "TIC_TAC_TOE_NOT_ACTIVE");
+  if (Number(payload.revision) !== Number(game.revision)) return jsonError("棋盘刚刚更新，请再落一次。", 409, "TIC_TAC_TOE_STALE_BOARD");
+  if (game.currentTurnUid !== user.uid) return jsonError("还没轮到你落子。", 409, "TIC_TAC_TOE_NOT_YOUR_TURN");
+  const position = Number(payload.position);
+  if (!Number.isInteger(position) || position < 0 || position >= TIC_TAC_TOE_SIZE * TIC_TAC_TOE_SIZE) {
+    return jsonError("这个格子不正确。", 400, "TIC_TAC_TOE_POSITION_INVALID");
+  }
+  const board = [...normalizeBoardState(game.boardState, TIC_TAC_TOE_SIZE, game.board)].map(Number);
+  if (board[position] !== 0) return jsonError("这个格子已经有棋子啦。", 409, "TIC_TAC_TOE_POSITION_TAKEN");
+  const stone = game.xUid === user.uid ? 1 : 2;
+  board[position] = stone;
+  const moveCount = Number(game.moveCount || 0) + 1;
+  const won = ticTacToeHasLine(board, stone);
+  const draw = !won && moveCount >= TIC_TAC_TOE_SIZE * TIC_TAC_TOE_SIZE;
+  const status = won ? "won" : draw ? "draw" : "active";
+  const now = Date.now();
+  const updated = await updateGameWithRevision(id, game.revision, {
+    boardState: board.join(""),
+    status,
+    winnerUid: won ? user.uid : null,
+    currentTurnUid: status === "active" ? relationship.partner.uid : null,
+    moveCount,
+    lastMove: { position, uid: user.uid, at: now, clientMoveId },
+    revision: Number(game.revision || 0) + 1,
+    finishedAt: status === "active" ? null : now,
+    updatedAt: now,
+  });
+  if (!updated) {
+    const latest = await getDocument("couple_games", id);
+    if (latest?.lastMove?.clientMoveId === clientMoveId && latest.lastMove.uid === user.uid) {
+      return response(200, { game: publicTicTacToeGame(latest, relationship.couple), replayed: true });
+    }
+    return jsonError("棋盘刚刚更新，已经帮你同步。", 409, "TIC_TAC_TOE_STALE_BOARD");
+  }
+  await bestEffortPartnerNotification(user, relationship, {
+    type: status === "active" ? "game_move" : "game_result",
+    icon: status === "active" ? (stone === 1 ? "❎" : "⭕") : won ? "🏆" : "🤝",
+    title: status === "active" ? "轮到你下井字棋了" : won ? "井字棋分出胜负啦" : "井字棋打成平局",
+    body: status === "active" ? `${cleanText(user.nickname, 10)} 刚占了一个格子` : won ? `${cleanText(user.nickname, 10)} 连成了三格` : "九个格子都填满啦",
+    targetTab: "games",
+    referenceId: `${id}:${updated.revision}`,
+    deferWechat: status === "active",
+  });
+  return response(200, { game: publicTicTacToeGame(updated, relationship.couple) });
+}
+
+async function resignTicTacToe(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = ticTacToeGameId(relationship.couple.id);
+  const game = await getDocument("couple_games", id);
+  if (!game || game.status !== "active") return jsonError("当前没有进行中的井字棋。", 409, "TIC_TAC_TOE_NOT_ACTIVE");
+  const now = Date.now();
+  const updated = await updateGameWithRevision(id, game.revision, {
+    status: "resigned",
+    winnerUid: relationship.partner.uid,
+    currentTurnUid: null,
+    revision: Number(game.revision || 0) + 1,
+    finishedAt: now,
+    updatedAt: now,
+  });
+  if (!updated) return jsonError("棋局刚刚更新，请同步后再试。", 409, "TIC_TAC_TOE_STALE_BOARD");
+  return response(200, { game: publicTicTacToeGame(updated, relationship.couple) });
+}
+
+async function startRps(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = rpsGameId(relationship.couple.id);
+  const existing = await getDocument("couple_games", id);
+  if (existing?.status === "active") {
+    return response(200, { game: publicRpsGame(existing, relationship.couple, user.uid), resumed: true });
+  }
+  const now = Date.now();
+  const game = await setDocument("couple_games", id, {
+    coupleId: relationship.couple.id,
+    type: "rps",
+    playerOneUid: user.uid,
+    playerTwoUid: relationship.partner.uid,
+    choices: {},
+    choiceActionIds: {},
+    winnerUid: null,
+    status: "active",
+    round: Math.max(0, Number(existing?.round) || 0) + 1,
+    revision: Math.max(0, Number(existing?.revision) || 0) + 1,
+    createdAt: existing?.createdAt || now,
+    startedAt: now,
+    updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "game_started",
+    icon: "✊",
+    title: "默契猜拳开局啦",
+    body: `${cleanText(user.nickname, 10)} 等你偷偷出拳`,
+    targetTab: "games",
+    referenceId: `${id}:${game.round}`,
+    deferWechat: true,
+  });
+  return response(201, { game: publicRpsGame(game, relationship.couple, user.uid), resumed: false });
+}
+
+async function chooseRps(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const choice = cleanText(payload.choice, 12);
+  if (!RPS_CHOICES.includes(choice)) return jsonError("没有认出这个手势。", 400, "RPS_CHOICE_INVALID");
+  const clientActionId = gameActionId(payload.clientActionId);
+  const id = rpsGameId(relationship.couple.id);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const game = await getDocument("couple_games", id);
+    if (!game || game.status !== "active") return jsonError("这一轮还没有开始或已经结束。", 409, "RPS_NOT_ACTIVE");
+    const choices = game.choices && typeof game.choices === "object" ? { ...game.choices } : {};
+    const actionIds = game.choiceActionIds && typeof game.choiceActionIds === "object" ? { ...game.choiceActionIds } : {};
+    if (choices[user.uid]) {
+      if (choices[user.uid] === choice || actionIds[user.uid] === clientActionId) {
+        return response(200, { game: publicRpsGame(game, relationship.couple, user.uid), replayed: true });
+      }
+      return jsonError("这一轮已经出过拳啦，等对方揭晓吧。", 409, "RPS_ALREADY_CHOSEN");
+    }
+    choices[user.uid] = choice;
+    actionIds[user.uid] = clientActionId;
+    const partnerChoice = choices[relationship.partner.uid];
+    const complete = RPS_CHOICES.includes(partnerChoice);
+    const winnerUid = complete
+      ? rpsWinner(choices[game.playerOneUid], choices[game.playerTwoUid], game.playerOneUid, game.playerTwoUid)
+      : null;
+    const now = Date.now();
+    const updated = await updateGameWithRevision(id, game.revision, {
+      choices,
+      choiceActionIds: actionIds,
+      status: complete ? "complete" : "active",
+      winnerUid,
+      revision: Number(game.revision || 0) + 1,
+      finishedAt: complete ? now : null,
+      updatedAt: now,
+    });
+    if (!updated) continue;
+    await bestEffortPartnerNotification(user, relationship, {
+      type: complete ? "game_result" : "game_move",
+      icon: complete ? "🎉" : "✊",
+      title: complete ? "默契猜拳揭晓啦" : "对方已经偷偷出拳",
+      body: complete ? "快来看看这一轮谁更胜一筹" : "轮到你选石头、剪刀还是布",
+      targetTab: "games",
+      referenceId: `${id}:${updated.revision}`,
+      deferWechat: !complete,
+    });
+    return response(200, { game: publicRpsGame(updated, relationship.couple, user.uid) });
+  }
+  return jsonError("两个人刚好同时出拳，请再点一次。", 409, "RPS_CONCURRENT_CHOICE");
 }
 
 async function resignGomoku(user) {
@@ -2443,7 +2785,7 @@ async function resignGomoku(user) {
   const game = await getDocument("couple_games", id);
   if (!game || game.status !== "active") return jsonError("当前没有进行中的五子棋。", 409, "GOMOKU_NOT_ACTIVE");
   const now = Date.now();
-  const updated = await updateDocument("couple_games", id, {
+  const updated = await updateGameWithRevision(id, game.revision, {
     status: "resigned",
     winnerUid: relationship.partner.uid,
     currentTurnUid: null,
@@ -2451,6 +2793,7 @@ async function resignGomoku(user) {
     finishedAt: now,
     updatedAt: now,
   });
+  if (!updated) return jsonError("棋局刚刚更新，请同步后再试。", 409, "GOMOKU_STALE_BOARD");
   await bestEffortPartnerNotification(user, relationship, {
     type: "game_result",
     icon: "🏳️",
@@ -4093,10 +4436,16 @@ async function handleAction(user, action, payload, requestContext) {
     case "react": return react(user, payload);
     case "send-nudge": return sendNudge(user, payload);
     case "complete-daily-spark": return completeDailySpark(user);
+    case "games-hub": return gamesHub(user);
     case "gomoku-hub": return gomokuHub(user);
     case "start-gomoku": return startGomoku(user);
     case "play-gomoku": return playGomoku(user, payload);
     case "resign-gomoku": return resignGomoku(user);
+    case "start-tic-tac-toe": return startTicTacToe(user);
+    case "play-tic-tac-toe": return playTicTacToe(user, payload);
+    case "resign-tic-tac-toe": return resignTicTacToe(user);
+    case "start-rps": return startRps(user);
+    case "choose-rps": return chooseRps(user, payload);
     case "delete-weight": return removeOwnedDocument(user, "weight_entries", payload.id);
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
@@ -4155,7 +4504,7 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.9.0",
+      version: "0.10.0",
       serverTime: Date.now(),
     });
   }
@@ -4167,7 +4516,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "content-safety",
-        version: "0.9.0",
+        version: "0.10.0",
         apis: ["security.msgSecCheck", "security.imgSecCheck"],
         coverage: [
           "avatar-image",
@@ -4209,7 +4558,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.9.0",
+        version: "0.10.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -4234,7 +4583,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "village",
-        version: "0.9.0",
+        version: "0.10.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -4259,7 +4608,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "notifications",
-        version: "0.9.0",
+        version: "0.10.0",
         templateConfigured: Boolean(WECHAT_MEMO_TEMPLATE_ID),
         serverTime: Date.now(),
       });
@@ -4281,8 +4630,8 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "games",
-        version: "0.9.0",
-        games: ["gomoku"],
+        version: "0.10.0",
+        games: ["gomoku", "tic-tac-toe", "rps"],
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -4337,6 +4686,10 @@ exports.main = async function main(event = {}, context = {}) {
     });
   } catch (error) {
     const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+    const gameAction = [
+      "games-hub", "gomoku-hub", "start-gomoku", "play-gomoku", "resign-gomoku",
+      "start-tic-tac-toe", "play-tic-tac-toe", "resign-tic-tac-toe", "start-rps", "choose-rps",
+    ].includes(action);
     console.error("couple-tracker cloud function failed", {
       action,
       diagnosticId,
@@ -4344,8 +4697,8 @@ exports.main = async function main(event = {}, context = {}) {
       stack: cleanText(error?.stack, 1000) || null,
     });
     return response(500, {
-      error: "小田地暂时打了个盹，请稍后再刷新一次。",
-      code: "INTERNAL_ERROR",
+      error: gameAction ? "双人游戏云端暂时没有完成这一步，请同步后重试。" : "小田地暂时打了个盹，请稍后再刷新一次。",
+      code: gameAction ? "GAME_INTERNAL_ERROR" : "INTERNAL_ERROR",
       diagnosticId,
     });
   }

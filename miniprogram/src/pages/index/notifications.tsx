@@ -160,7 +160,7 @@ export default function NotificationsPanel({
   return (
     <>
       <View className="page-heading notification-heading">
-        <Text className="kicker">我们俩的小田地 · 0.9.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.10.0</Text>
         <Text className="title">消息与提醒中心</Text>
         <Text className="description">伴侣动态、每日健康提醒、纪念日和村庄互动都集中在这里。</Text>
       </View>
