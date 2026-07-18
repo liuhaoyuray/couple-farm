@@ -90,6 +90,17 @@ function createFakeCloudbase() {
           async update(fields) {
             const document = collections.get(name)?.get(documentId);
             if (!document) throw new Error("DOCUMENT_NOT_FOUND");
+            // Match CloudBase production semantics that surfaced in 0.11.0:
+            // doc.update flattens nested objects, so replacing a null value with
+            // an object fails (for example lastMove: null -> { at, uid, ... }).
+            if (name === "couple_games" && Object.entries(fields).some(([field, value]) => (
+              document[field] === null
+              && value
+              && typeof value === "object"
+              && !Array.isArray(value)
+            ))) {
+              throw new Error("Cannot create nested field in null element");
+            }
             collections.get(name).set(documentId, { ...document, ...fields, _id: documentId });
             return { updated: 1 };
           },
