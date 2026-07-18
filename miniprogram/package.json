@@ -1,6 +1,6 @@
 {
   "name": "couple-farm-miniprogram",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "scripts": {
     "build:weapp": "HOME=/tmp taro build --type weapp",

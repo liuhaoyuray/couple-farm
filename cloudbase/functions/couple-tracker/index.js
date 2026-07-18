@@ -40,6 +40,7 @@ const COLLECTIONS = [
   "in_app_notifications",
   "content_moderations",
   "daily_sparks",
+  "couple_games",
   "villages",
   "village_members",
   "village_invites",
@@ -103,6 +104,9 @@ const notificationPreferenceByType = {
   mood_checkin: "rituals",
   daily_answer: "rituals",
   spark_completed: "rituals",
+  game_started: "rituals",
+  game_move: "rituals",
+  game_result: "rituals",
   village_like: "village",
   village_comment: "village",
 };
@@ -143,6 +147,9 @@ const activityPushCooldowns = {
   decision_resolved: 5 * 60 * 1000,
   mood_checkin: 30 * 60 * 1000,
   daily_answer: 30 * 60 * 1000,
+  game_started: 5 * 60 * 1000,
+  game_move: 10 * 60 * 1000,
+  game_result: 2 * 60 * 1000,
 };
 const nudgePresets = {
   weight: { icon: "⚖️", title: "称重小提醒", body: "体重秤在等你来打卡啦" },
@@ -153,6 +160,8 @@ const nudgePresets = {
   hug: { icon: "🤗", title: "抱抱派送中", body: "你的伴侣给你送来一个抱抱" },
 };
 const VILLAGE_MEMBER_LIMIT = 24;
+const GOMOKU_SIZE = 15;
+const MEDIA_URL_MAX_AGE = 60 * 60;
 const FOUNDER_TRIAL_DAYS = 7;
 const praiseMessages = [
   "今天也很棒，奖励一颗星星！",
@@ -524,6 +533,124 @@ async function moderateUpload(user, payload, requestContext) {
   const safetyError = await ensureImageModerated(user, fileId, kind, requestContext);
   if (safetyError) return safetyError;
   return response(200, { ok: true, status: "pass", fileId });
+}
+
+function parseCloudMediaFileId(value) {
+  const fileId = cleanText(value, 512);
+  const match = fileId.match(/^cloud:\/\/[^/]+\/(avatars|community)\/([^/]+)\/[A-Za-z0-9._-]+$/);
+  if (!match) return null;
+  return { fileId, root: match[1], ownerUid: match[2] };
+}
+
+async function activeVillageIdForCouple(coupleId) {
+  if (!coupleId) return null;
+  const memberships = await queryAll("village_members", { coupleId }, [], VILLAGE_MEMBER_LIMIT + 10);
+  return memberships.find((item) => item.status === "active")?.villageId || null;
+}
+
+async function canReadSharedMedia(user, parsed) {
+  if (parsed.ownerUid === user.uid) return true;
+  const viewerCoupleId = user.coupleId || null;
+
+  if (parsed.root === "avatars") {
+    const owner = await getDocument("users", parsed.ownerUid);
+    if (!owner || owner.avatarFileId !== parsed.fileId) return false;
+    if (viewerCoupleId && owner.coupleId === viewerCoupleId) return true;
+    const ownerCouple = owner.coupleId ? await getDocument("couples", owner.coupleId) : null;
+    if (ownerCouple?.status === "active" && ownerCouple.communityEnabled) return true;
+    if (!viewerCoupleId || !owner.coupleId) return false;
+    const [viewerVillageId, ownerVillageId] = await Promise.all([
+      activeVillageIdForCouple(viewerCoupleId),
+      activeVillageIdForCouple(owner.coupleId),
+    ]);
+    return Boolean(viewerVillageId && viewerVillageId === ownerVillageId);
+  }
+
+  const posts = await queryAll("community_posts", { imageFileId: parsed.fileId }, [], 20);
+  for (const post of posts.filter((item) => item.status === "published")) {
+    if (post.authorUid === user.uid || (viewerCoupleId && post.authorCoupleId === viewerCoupleId)) return true;
+    if (post.villageId) {
+      if (!viewerCoupleId) continue;
+      const viewerVillageId = await activeVillageIdForCouple(viewerCoupleId);
+      if (viewerVillageId === post.villageId) return true;
+      continue;
+    }
+    const authorCouple = post.authorCoupleId ? await getDocument("couples", post.authorCoupleId) : null;
+    if (authorCouple?.status === "active" && authorCouple.communityEnabled) return true;
+  }
+  return false;
+}
+
+async function requireReadableMedia(user, payload) {
+  const parsed = parseCloudMediaFileId(payload.fileId);
+  if (!parsed) return { error: jsonError("图片文件地址不正确。", 400, "MEDIA_FILE_INVALID") };
+  if (!await canReadSharedMedia(user, parsed)) {
+    return { error: jsonError("你暂时不能查看这张图片。", 403, "MEDIA_READ_FORBIDDEN") };
+  }
+  return { parsed };
+}
+
+async function resolveMediaUrl(user, payload) {
+  const readable = await requireReadableMedia(user, payload);
+  if (readable.error) return readable.error;
+  try {
+    const resolver = typeof app.getTempFileURL === "function" ? app : wxCloud;
+    if (typeof resolver.getTempFileURL !== "function") {
+      return jsonError("云图片地址暂时无法生成。", 503, "MEDIA_URL_UNAVAILABLE");
+    }
+    const result = await resolver.getTempFileURL({
+      fileList: [{ fileID: readable.parsed.fileId, maxAge: MEDIA_URL_MAX_AGE }],
+    });
+    const item = result?.fileList?.[0] || null;
+    const tempFileURL = cleanText(item?.tempFileURL, 2048);
+    if (!tempFileURL || !/^https:\/\//.test(tempFileURL)) {
+      console.warn("Cloud media URL was empty", { fileId: readable.parsed.fileId, item });
+      return jsonError("云图片地址暂时无法生成。", 503, "MEDIA_URL_EMPTY");
+    }
+    return response(200, {
+      fileId: readable.parsed.fileId,
+      tempFileURL,
+      expiresAt: Date.now() + MEDIA_URL_MAX_AGE * 1000,
+    });
+  } catch (error) {
+    console.error("Cloud media URL resolution failed", errorDetails(error));
+    return jsonError("云图片地址暂时无法生成。", 503, "MEDIA_URL_FAILED");
+  }
+}
+
+async function downloadMedia(user, payload) {
+  const readable = await requireReadableMedia(user, payload);
+  if (readable.error) return readable.error;
+  try {
+    const result = await wxCloud.downloadFile({ fileID: readable.parsed.fileId });
+    const fileContent = Buffer.from(result?.fileContent || []);
+    if (!fileContent.length || fileContent.length > 1024 * 1024) {
+      return jsonError("图片文件暂时无法读取。", 503, "MEDIA_DOWNLOAD_INVALID");
+    }
+    const png = fileContent.length >= 8
+      && fileContent[0] === 0x89 && fileContent[1] === 0x50
+      && fileContent[2] === 0x4e && fileContent[3] === 0x47;
+    const jpeg = fileContent.length >= 3
+      && fileContent[0] === 0xff && fileContent[1] === 0xd8 && fileContent[2] === 0xff;
+    if (!png && !jpeg) return jsonError("图片格式暂时不支持。", 415, "MEDIA_FORMAT_INVALID");
+    const chunkSize = 192 * 1024;
+    const requestedOffset = Number(payload.offset);
+    const offset = Number.isInteger(requestedOffset) && requestedOffset >= 0 && requestedOffset < fileContent.length
+      ? requestedOffset
+      : 0;
+    const end = Math.min(fileContent.length, offset + chunkSize);
+    return response(200, {
+      fileId: readable.parsed.fileId,
+      contentType: png ? "image/png" : "image/jpeg",
+      base64: fileContent.subarray(offset, end).toString("base64"),
+      offset,
+      totalBytes: fileContent.length,
+      nextOffset: end < fileContent.length ? end : null,
+    });
+  } catch (error) {
+    console.error("Cloud media download failed", errorDetails(error));
+    return jsonError("图片文件暂时无法读取。", 503, "MEDIA_DOWNLOAD_FAILED");
+  }
 }
 
 function currentCommunityPrompt(now = Date.now()) {
@@ -2152,6 +2279,189 @@ async function completeDailySpark(user) {
   });
 }
 
+function gomokuGameId(coupleId) {
+  return `gomoku_${sha256(coupleId).slice(0, 44)}`;
+}
+
+function normalizeGomokuBoard(value) {
+  if (!Array.isArray(value) || value.length !== GOMOKU_SIZE * GOMOKU_SIZE) {
+    return Array(GOMOKU_SIZE * GOMOKU_SIZE).fill(0);
+  }
+  return value.map((cell) => cell === 1 || cell === 2 ? cell : 0);
+}
+
+function publicGomokuGame(game, couple) {
+  if (!game) return null;
+  const memberUids = Array.isArray(couple?.memberUids) ? couple.memberUids : [];
+  const blackUid = memberUids.includes(game.blackUid) ? game.blackUid : memberUids[0] || null;
+  const whiteUid = memberUids.includes(game.whiteUid) ? game.whiteUid : memberUids.find((uid) => uid !== blackUid) || null;
+  const status = ["active", "won", "draw", "resigned"].includes(game.status) ? game.status : "active";
+  return {
+    id: game.id,
+    size: GOMOKU_SIZE,
+    board: normalizeGomokuBoard(game.board),
+    blackUid,
+    whiteUid,
+    currentTurnUid: status === "active" && memberUids.includes(game.currentTurnUid) ? game.currentTurnUid : null,
+    winnerUid: memberUids.includes(game.winnerUid) ? game.winnerUid : null,
+    status,
+    moveCount: Number(game.moveCount) || 0,
+    lastMove: game.lastMove && Number.isInteger(game.lastMove.row) && Number.isInteger(game.lastMove.col)
+      ? { row: game.lastMove.row, col: game.lastMove.col, uid: game.lastMove.uid, at: Number(game.lastMove.at) || null }
+      : null,
+    round: Math.max(1, Number(game.round) || 1),
+    revision: Math.max(1, Number(game.revision) || 1),
+    createdAt: Number(game.createdAt) || Date.now(),
+    updatedAt: Number(game.updatedAt) || Number(game.createdAt) || Date.now(),
+  };
+}
+
+function gomokuHasFive(board, row, col, stone) {
+  const inside = (nextRow, nextCol) => (
+    nextRow >= 0 && nextRow < GOMOKU_SIZE && nextCol >= 0 && nextCol < GOMOKU_SIZE
+  );
+  const directions = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  return directions.some(([rowStep, colStep]) => {
+    let count = 1;
+    for (const direction of [-1, 1]) {
+      let nextRow = row + rowStep * direction;
+      let nextCol = col + colStep * direction;
+      while (inside(nextRow, nextCol) && board[nextRow * GOMOKU_SIZE + nextCol] === stone) {
+        count += 1;
+        nextRow += rowStep * direction;
+        nextCol += colStep * direction;
+      }
+    }
+    return count >= 5;
+  });
+}
+
+async function gomokuHub(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const game = await getDocument("couple_games", gomokuGameId(relationship.couple.id));
+  return response(200, {
+    game: publicGomokuGame(game, relationship.couple),
+    players: [publicUser(user), publicUser(relationship.partner)],
+    serverTime: Date.now(),
+  });
+}
+
+async function startGomoku(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = gomokuGameId(relationship.couple.id);
+  const existing = await getDocument("couple_games", id);
+  if (existing?.status === "active") {
+    return response(200, { game: publicGomokuGame(existing, relationship.couple), resumed: true });
+  }
+  const now = Date.now();
+  const game = await setDocument("couple_games", id, {
+    coupleId: relationship.couple.id,
+    type: "gomoku",
+    size: GOMOKU_SIZE,
+    board: Array(GOMOKU_SIZE * GOMOKU_SIZE).fill(0),
+    blackUid: user.uid,
+    whiteUid: relationship.partner.uid,
+    currentTurnUid: user.uid,
+    winnerUid: null,
+    status: "active",
+    moveCount: 0,
+    lastMove: null,
+    round: Math.max(0, Number(existing?.round) || 0) + 1,
+    revision: Math.max(0, Number(existing?.revision) || 0) + 1,
+    createdAt: existing?.createdAt || now,
+    startedAt: now,
+    updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "game_started",
+    icon: "🎮",
+    title: "五子棋开局啦",
+    body: `${cleanText(user.nickname, 10)} 邀请你来下一盘，黑棋先行`,
+    targetTab: "games",
+    referenceId: `${id}:${game.round}`,
+  });
+  return response(201, { game: publicGomokuGame(game, relationship.couple), resumed: false });
+}
+
+async function playGomoku(user, payload) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = gomokuGameId(relationship.couple.id);
+  const game = await getDocument("couple_games", id);
+  if (!game || game.status !== "active") return jsonError("这一局还没有开始或已经结束。", 409, "GOMOKU_NOT_ACTIVE");
+  const expectedRevision = Number(payload.revision);
+  if (!Number.isInteger(expectedRevision)) return jsonError("棋盘版本不正确，请刷新后再落子。", 400, "GOMOKU_REVISION_REQUIRED");
+  if (expectedRevision !== Number(game.revision)) {
+    return jsonError("棋盘已经更新，请刷新后再落子。", 409, "GOMOKU_STALE_BOARD");
+  }
+  if (game.currentTurnUid !== user.uid) return jsonError("还没轮到你落子。", 409, "GOMOKU_NOT_YOUR_TURN");
+  const row = Number(payload.row);
+  const col = Number(payload.col);
+  if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || row >= GOMOKU_SIZE || col < 0 || col >= GOMOKU_SIZE) {
+    return jsonError("这个落子位置不正确。", 400, "GOMOKU_POSITION_INVALID");
+  }
+  const board = normalizeGomokuBoard(game.board);
+  const index = row * GOMOKU_SIZE + col;
+  if (board[index] !== 0) return jsonError("这里已经有棋子啦。", 409, "GOMOKU_POSITION_TAKEN");
+  const stone = game.blackUid === user.uid ? 1 : 2;
+  board[index] = stone;
+  const moveCount = Number(game.moveCount || 0) + 1;
+  const won = gomokuHasFive(board, row, col, stone);
+  const draw = !won && moveCount >= GOMOKU_SIZE * GOMOKU_SIZE;
+  const now = Date.now();
+  const status = won ? "won" : draw ? "draw" : "active";
+  const updated = await updateDocument("couple_games", id, {
+    board,
+    status,
+    winnerUid: won ? user.uid : null,
+    currentTurnUid: status === "active" ? relationship.partner.uid : null,
+    moveCount,
+    lastMove: { row, col, uid: user.uid, at: now },
+    revision: Number(game.revision || 0) + 1,
+    finishedAt: status === "active" ? null : now,
+    updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: status === "active" ? "game_move" : "game_result",
+    icon: status === "active" ? (stone === 1 ? "⚫" : "⚪") : won ? "🏆" : "🤝",
+    title: status === "active" ? "轮到你下五子棋了" : won ? "这一局五子棋结束啦" : "五子棋打成平局",
+    body: status === "active"
+      ? `${cleanText(user.nickname, 10)} 刚落了一子，等你接招`
+      : won ? `${cleanText(user.nickname, 10)} 连成了五子，再来一局吗？` : "棋盘下满了，再开一局吧",
+    targetTab: "games",
+    referenceId: `${id}:${updated.revision}`,
+  });
+  return response(200, { game: publicGomokuGame(updated, relationship.couple) });
+}
+
+async function resignGomoku(user) {
+  const relationship = await requireCouple(user);
+  if (relationship.error) return relationship.error;
+  const id = gomokuGameId(relationship.couple.id);
+  const game = await getDocument("couple_games", id);
+  if (!game || game.status !== "active") return jsonError("当前没有进行中的五子棋。", 409, "GOMOKU_NOT_ACTIVE");
+  const now = Date.now();
+  const updated = await updateDocument("couple_games", id, {
+    status: "resigned",
+    winnerUid: relationship.partner.uid,
+    currentTurnUid: null,
+    revision: Number(game.revision || 0) + 1,
+    finishedAt: now,
+    updatedAt: now,
+  });
+  await bestEffortPartnerNotification(user, relationship, {
+    type: "game_result",
+    icon: "🏳️",
+    title: "五子棋本局结束",
+    body: `${cleanText(user.nickname, 10)} 认输啦，你赢得了这一局`,
+    targetTab: "games",
+    referenceId: `${id}:${updated.revision}`,
+  });
+  return response(200, { game: publicGomokuGame(updated, relationship.couple) });
+}
+
 async function createInvite(user) {
   if (!user.profileComplete) return jsonError("先给自己取个昵称，再邀请伴侣吧。", 409, "PROFILE_REQUIRED");
   if (user.coupleId) return jsonError("你已经绑定伴侣了。", 409, "ALREADY_PAIRED");
@@ -3756,6 +4066,8 @@ async function handleAction(user, action, payload, requestContext) {
     case "bootstrap": return bootstrap(user);
     case "get-dashboard": return readDashboard(user);
     case "moderate-upload": return moderateUpload(user, payload, requestContext);
+    case "resolve-media-url": return resolveMediaUrl(user, payload);
+    case "download-media": return downloadMedia(user, payload);
     case "update-profile": return updateProfile(user, payload, requestContext);
     case "update-couple-settings": return updateCoupleSettings(user, payload, requestContext);
     case "update-reminders": return updateReminderSettings(user, payload);
@@ -3781,6 +4093,10 @@ async function handleAction(user, action, payload, requestContext) {
     case "react": return react(user, payload);
     case "send-nudge": return sendNudge(user, payload);
     case "complete-daily-spark": return completeDailySpark(user);
+    case "gomoku-hub": return gomokuHub(user);
+    case "start-gomoku": return startGomoku(user);
+    case "play-gomoku": return playGomoku(user, payload);
+    case "resign-gomoku": return resignGomoku(user);
     case "delete-weight": return removeOwnedDocument(user, "weight_entries", payload.id);
     case "delete-poop": return removeOwnedDocument(user, "poop_entries", payload.id);
     case "clear-my-records": return clearMyRecords(user);
@@ -3839,7 +4155,7 @@ exports.main = async function main(event = {}, context = {}) {
     return response(200, {
       ok: true,
       service: "couple-tracker",
-      version: "0.8.0",
+      version: "0.9.0",
       serverTime: Date.now(),
     });
   }
@@ -3851,7 +4167,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "content-safety",
-        version: "0.8.0",
+        version: "0.9.0",
         apis: ["security.msgSecCheck", "security.imgSecCheck"],
         coverage: [
           "avatar-image",
@@ -3893,7 +4209,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "community",
-        version: "0.8.0",
+        version: "0.9.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -3918,7 +4234,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "village",
-        version: "0.8.0",
+        version: "0.9.0",
         serverTime: Date.now(),
       });
     } catch (error) {
@@ -3943,7 +4259,7 @@ exports.main = async function main(event = {}, context = {}) {
       return response(200, {
         ok: true,
         service: "notifications",
-        version: "0.8.0",
+        version: "0.9.0",
         templateConfigured: Boolean(WECHAT_MEMO_TEMPLATE_ID),
         serverTime: Date.now(),
       });
@@ -3953,6 +4269,28 @@ exports.main = async function main(event = {}, context = {}) {
       return response(500, {
         error: "情侣消息云端尚未准备好。",
         code: "NOTIFICATION_HEALTH_FAILED",
+        diagnosticId,
+      });
+    }
+  }
+
+  if (action === "game-health") {
+    try {
+      await ensureCollections();
+      await queryAll("couple_games", {}, [["updatedAt", "desc"]], 1);
+      return response(200, {
+        ok: true,
+        service: "games",
+        version: "0.9.0",
+        games: ["gomoku"],
+        serverTime: Date.now(),
+      });
+    } catch (error) {
+      const diagnosticId = cleanText(context.requestId, 64) || randomId(4);
+      console.error("game health check failed", { diagnosticId, ...errorDetails(error) });
+      return response(500, {
+        error: "双人游戏云端尚未准备好。",
+        code: "GAME_HEALTH_FAILED",
         diagnosticId,
       });
     }

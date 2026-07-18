@@ -106,6 +106,16 @@ function createFakeCloudbase() {
         auth: () => ({
           getUserInfo: () => caller ? { ...caller } : {},
         }),
+        getTempFileURL: async ({ fileList }) => ({
+          fileList: fileList.map((item) => {
+            const fileID = typeof item === "string" ? item : item.fileID;
+            return {
+              fileID,
+              tempFileURL: `https://media.example.invalid/${encodeURIComponent(fileID)}`,
+              code: "SUCCESS",
+            };
+          }),
+        }),
       };
     },
     setCaller(info) {
@@ -171,7 +181,7 @@ test("exposes a credential-free deployment health check", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "couple-tracker");
-  assert.equal(result.data.version, "0.8.0");
+  assert.equal(result.data.version, "0.9.0");
 });
 
 test("verifies the community schema without a user session", async () => {
@@ -179,7 +189,7 @@ test("verifies the community schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "community");
-  assert.equal(result.data.version, "0.8.0");
+  assert.equal(result.data.version, "0.9.0");
 });
 
 test("verifies the private village schema without a user session", async () => {
@@ -187,7 +197,7 @@ test("verifies the private village schema without a user session", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "village");
-  assert.equal(result.data.version, "0.8.0");
+  assert.equal(result.data.version, "0.9.0");
 });
 
 test("verifies the partner notification schema without a user session", async () => {
@@ -195,15 +205,24 @@ test("verifies the partner notification schema without a user session", async ()
   assert.equal(result.status, 200);
   assert.equal(result.data.ok, true);
   assert.equal(result.data.service, "notifications");
-  assert.equal(result.data.version, "0.8.0");
+  assert.equal(result.data.version, "0.9.0");
   assert.equal(result.data.templateConfigured, true);
+});
+
+test("verifies the double-player game schema without a user session", async () => {
+  const result = await invoke(null, "game-health");
+  assert.equal(result.status, 200);
+  assert.equal(result.data.ok, true);
+  assert.equal(result.data.service, "games");
+  assert.equal(result.data.version, "0.9.0");
+  assert.deepEqual(result.data.games, ["gomoku"]);
 });
 
 test("verifies the full UGC content-safety contract without a user session", async () => {
   const result = await invoke(null, "content-safety-health");
   assert.equal(result.status, 200);
   assert.equal(result.data.service, "content-safety");
-  assert.equal(result.data.version, "0.8.0");
+  assert.equal(result.data.version, "0.9.0");
   assert.deepEqual(result.data.apis, ["security.msgSecCheck", "security.imgSecCheck"]);
   assert.ok(result.data.coverage.includes("avatar-image"));
   assert.ok(result.data.coverage.includes("village-post-image-text"));
@@ -490,6 +509,56 @@ test("delivers partner activity to the inbox and consumes one-time WeChat remind
   assert.ok(dashboard.data.weeklyPulse.cheers >= 1);
 });
 
+test("plays a server-validated couple gomoku round and notifies the partner", async () => {
+  const started = await invoke("browser-a", "start-gomoku", {}, firstToken);
+  assert.equal(started.status, 201);
+  assert.equal(started.data.game.status, "active");
+  assert.equal(started.data.game.board.length, 225);
+  assert.equal(started.data.game.currentTurnUid, started.data.game.blackUid);
+
+  let game = started.data.game;
+  const missingRevision = await invoke("browser-a", "play-gomoku", { row: 0, col: 0 }, firstToken);
+  assert.equal(missingRevision.status, 400);
+  assert.equal(missingRevision.data.code, "GOMOKU_REVISION_REQUIRED");
+  const outOfTurn = await invoke("browser-b", "play-gomoku", {
+    row: 0,
+    col: 0,
+    revision: game.revision,
+  }, secondToken);
+  assert.equal(outOfTurn.status, 409);
+  assert.equal(outOfTurn.data.code, "GOMOKU_NOT_YOUR_TURN");
+
+  for (let column = 0; column < 4; column += 1) {
+    const black = await invoke("browser-a", "play-gomoku", {
+      row: 7,
+      col: column,
+      revision: game.revision,
+    }, firstToken);
+    assert.equal(black.status, 200);
+    game = black.data.game;
+    const white = await invoke("browser-b", "play-gomoku", {
+      row: 8,
+      col: column,
+      revision: game.revision,
+    }, secondToken);
+    assert.equal(white.status, 200);
+    game = white.data.game;
+  }
+
+  const winningMove = await invoke("browser-a", "play-gomoku", {
+    row: 7,
+    col: 4,
+    revision: game.revision,
+  }, firstToken);
+  assert.equal(winningMove.status, 200);
+  assert.equal(winningMove.data.game.status, "won");
+  assert.equal(winningMove.data.game.winnerUid, winningMove.data.game.blackUid);
+  assert.equal(winningMove.data.game.moveCount, 9);
+
+  const partnerCenter = await invoke("browser-b", "notification-center", {}, secondToken);
+  assert.ok(partnerCenter.data.items.some((item) => item.type === "game_result" && item.targetTab === "games"));
+});
+
 test("supports editable profiles, farm settings, reminders and anniversaries", async () => {
   const profile = await invoke("browser-a", "update-profile", {
     nickname: "鸡包蛋改",
@@ -772,6 +841,23 @@ test("supports a moderated community feed with images, follows, likes, comments 
   assert.equal(feed.data.posts[0].likedByViewer, false);
   assert.equal(feed.data.posts[0].shareStat.key, "farmVitality");
 
+  const resolvedCommunityImage = await invoke(firstMiniCaller, "resolve-media-url", {
+    fileId: created.data.post.imageFileId,
+  }, firstToken, "mini");
+  assert.equal(resolvedCommunityImage.status, 200);
+  assert.match(resolvedCommunityImage.data.tempFileURL, /^https:\/\/media\.example\.invalid\//);
+  const downloadedCommunityImage = await invoke(firstMiniCaller, "download-media", {
+    fileId: created.data.post.imageFileId,
+  }, firstToken, "mini");
+  assert.equal(downloadedCommunityImage.status, 200);
+  assert.equal(downloadedCommunityImage.data.contentType, "image/jpeg");
+  assert.match(downloadedCommunityImage.data.base64, /^[A-Za-z0-9+/]+=*$/);
+  const forbiddenImage = await invoke(firstMiniCaller, "resolve-media-url", {
+    fileId: "cloud://test.bucket/community/unknown-user/private.jpg",
+  }, firstToken, "mini");
+  assert.equal(forbiddenImage.status, 403);
+  assert.equal(forbiddenImage.data.code, "MEDIA_READ_FORBIDDEN");
+
   fakeCloudbase.setReadFailure("community_comments", true);
   const degradedFeed = await invoke(firstMiniCaller, "community-feed", { mode: "all" }, firstToken, "mini");
   fakeCloudbase.setReadFailure("community_comments", false);
@@ -832,6 +918,7 @@ test("supports a moderated community feed with images, follows, likes, comments 
   const villagePost = await invoke(secondMiniCaller, "create-village-post", {
     content: "周六有人一起吃火锅吗？",
     topic: "daily",
+    imageFileId: `cloud://test.bucket/community/${thirdUid}/village.jpg`,
   }, thirdToken, "mini");
   assert.equal(villagePost.status, 201);
 
@@ -840,6 +927,10 @@ test("supports a moderated community feed with images, follows, likes, comments 
   assert.equal(villageFeed.data.serviceState, "healthy");
   assert.equal(villageFeed.data.posts.length, 1);
   assert.equal(villageFeed.data.posts[0].content, "周六有人一起吃火锅吗？");
+  const resolvedVillageImage = await invoke(firstMiniCaller, "resolve-media-url", {
+    fileId: villagePost.data.post.imageFileId,
+  }, firstToken, "mini");
+  assert.equal(resolvedVillageImage.status, 200);
 
   const villageLike = await invoke(firstMiniCaller, "toggle-village-like", {
     postId: villagePost.data.post.id,

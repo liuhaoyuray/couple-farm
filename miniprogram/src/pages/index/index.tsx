@@ -9,6 +9,7 @@ import TrendChart from "./trend-chart";
 import NotebookPanel from "./notebook";
 import TogetherPanel from "./together";
 import VillagePanel from "./village";
+import GamesPanel from "./games";
 import "./index.scss";
 
 type ReminderRule = {
@@ -120,7 +121,7 @@ type SharedMemoSummary = {
   status: "open" | "completed" | "archived";
 };
 
-type TabKey = "farm" | "inbox" | "notebook" | "trends" | "together" | "village" | "anniversaries" | "pair" | "us";
+type TabKey = "farm" | "inbox" | "notebook" | "trends" | "together" | "games" | "village" | "anniversaries" | "pair" | "us";
 type RecordItem = {
   id: string;
   type: "weight" | "poop";
@@ -262,7 +263,7 @@ function Loading({ error, retry }: { error?: string | null; retry?: () => void }
     <View className="full-page">
       <View className="message-card">
         <Text className="pixel-heart">♥</Text>
-        <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
+        <Text className="kicker">我们俩的小田地 · 0.9.0</Text>
         <Text className="title">{error ? "小田地打了个盹" : "正在打开我们俩的小田地"}</Text>
         <Text className="description">{error || "第一次打开会自动领取微信身份，不需要注册密码。"}</Text>
         {retry && <Button className="primary" onClick={retry}>重新连接</Button>}
@@ -748,7 +749,7 @@ export default function IndexPage() {
 
             {soloTab === "farm" && <>
               <View className="farm-hero solo-hero">
-                <View><Text className="kicker">我们俩的小田地 · 0.8.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
+                <View><Text className="kicker">我们俩的小田地 · 0.9.0</Text><Text className="farm-title">{viewer.nickname} 的体验田</Text><Text className="description small">先自己记录，配对后这些数据会自动搬进共同田地。</Text></View>
                 <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🌷</Text></View>
               </View>
 
@@ -814,12 +815,12 @@ export default function IndexPage() {
           {error && <View className="error-banner"><Text>{error}</Text><Button onClick={() => setError(null)}>×</Button></View>}
 
           {["farm", "trends"].includes(activeTab) && <View className="section-switcher"><Button className={activeTab === "farm" ? "active" : ""} onClick={() => setActiveTab("farm")}>今日田地</Button><Button className={activeTab === "trends" ? "active" : ""} onClick={() => setActiveTab("trends")}>健康趋势</Button></View>}
-          {["together", "notebook", "anniversaries"].includes(activeTab) && <View className="section-switcher three"><Button className={activeTab === "together" ? "active" : ""} onClick={() => setActiveTab("together")}>今日相伴</Button><Button className={activeTab === "notebook" ? "active" : ""} onClick={() => setActiveTab("notebook")}>小本本</Button><Button className={activeTab === "anniversaries" ? "active" : ""} onClick={() => setActiveTab("anniversaries")}>纪念日</Button></View>}
+          {["together", "notebook", "anniversaries", "games"].includes(activeTab) && <View className="section-switcher four"><Button className={activeTab === "together" ? "active" : ""} onClick={() => setActiveTab("together")}>今日相伴</Button><Button className={activeTab === "notebook" ? "active" : ""} onClick={() => setActiveTab("notebook")}>小本本</Button><Button className={activeTab === "anniversaries" ? "active" : ""} onClick={() => setActiveTab("anniversaries")}>纪念日</Button><Button className={activeTab === "games" ? "active" : ""} onClick={() => setActiveTab("games")}>一起玩</Button></View>}
           {["us", "inbox"].includes(activeTab) && <View className="section-switcher"><Button className={activeTab === "us" ? "active" : ""} onClick={() => setActiveTab("us")}>我的设置</Button><Button className={activeTab === "inbox" ? "active" : ""} onClick={() => setActiveTab("inbox")}>消息{unreadCount ? ` ${unreadCount}` : ""}</Button></View>}
 
           {activeTab === "farm" && <>
             <View className="farm-hero">
-              <View><Text className="kicker">我们俩的小田地 · 0.8.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
+              <View><Text className="kicker">我们俩的小田地 · 0.9.0</Text><Text className="farm-title">{data.couple.farmName}</Text></View>
               <View className="day-counter"><Text className="counter-value">{coupleDays || "--"}</Text><Text className="counter-label">在一起天数</Text></View>
               <View className="farm-ground"><Text>🌳</Text><Text>🏡</Text><Text>🐥</Text><Text>🐥</Text><Text>🌷</Text></View>
             </View>
@@ -847,7 +848,7 @@ export default function IndexPage() {
 
             <View className="panel progress-panel"><View className="section-heading"><View><Text className="kicker">今日耕耘</Text><Text className="subtitle">完成记录，让田地长大</Text></View><Text className="progress-number">{farmProgress}%</Text></View><View className="progress-track"><View className="progress-fill" style={{ width: `${farmProgress}%` }} /></View><View className="task-row"><Text className={myWeightDone ? "task done" : "task"}>⚖️ {myWeightDone ? "已称重" : "待称重"}</Text><Text className={myPoopDone ? "task done" : "task"}>🚽 {myPoopDone ? "已记录" : "待记录"}</Text></View></View>
 
-            <View className="farm-shortcuts"><Button onClick={() => setActiveTab("trends")}><Text>📈</Text><View><Text className="activity-title">共同趋势</Text><Text className="role">体重与如厕变化</Text></View><Text className="chevron">›</Text></Button><Button onClick={() => setActiveTab("anniversaries")}><Text>💞</Text><View><Text className="activity-title">纪念日</Text><Text className="role">重要日子与倒计时</Text></View><Text className="chevron">›</Text></Button></View>
+            <View className="farm-shortcuts"><Button onClick={() => setActiveTab("trends")}><Text>📈</Text><View><Text className="activity-title">共同趋势</Text><Text className="role">体重与如厕变化</Text></View><Text className="chevron">›</Text></Button><Button onClick={() => setActiveTab("games")}><Text>🎮</Text><View><Text className="activity-title">双人游戏</Text><Text className="role">来一局五子棋</Text></View><Text className="chevron">›</Text></Button></View>
 
             <View className="panel action-panel"><Text className="kicker">快速记录</Text><Text className="subtitle">{editingWeightId || editingPoopId ? "正在修改一条记录" : "我的今天"}</Text><View className="date-row"><Picker mode="date" value={recordDate} onChange={(event) => setRecordDate(String(event.detail.value))}><View className="picker-field">📅 {recordDate}</View></Picker><Picker mode="time" value={recordTime} onChange={(event) => setRecordTime(String(event.detail.value))}><View className="picker-field">🕐 {recordTime}</View></Picker></View><View className="weight-row"><Input className="field" type="digit" value={weight} onInput={(event) => setWeight(event.detail.value)} placeholder="体重 kg，例如 68.4" /><Button className="primary compact" loading={busy} onClick={saveWeight}>{editingWeightId ? "保存" : "记体重"}</Button></View><Button className="secondary full" loading={busy} onClick={savePoop}>{editingPoopId ? "保存如厕时间" : "🚽 记一次如厕"}</Button>{(editingWeightId || editingPoopId) && <Button className="text-button" onClick={resetRecordForm}>取消修改</Button>}</View>
 
@@ -867,7 +868,9 @@ export default function IndexPage() {
             <View className="panel"><Text className="kicker">记录管理</Text><Text className="subtitle">最近的记录</Text>{recordItems.length ? <View className="record-list">{recordItems.slice(0, 24).map((record) => { const owner = people.find((person) => person.uid === record.ownerUid) || viewer; const mine = record.ownerUid === viewer.uid; return <View className="record-row" key={`${record.type}-${record.id}`}><Text className="record-icon">{record.type === "weight" ? "⚖️" : "🚽"}</Text><View className="record-copy"><Text className="activity-title">{owner.nickname} · {record.type === "weight" ? `${record.weightKg?.toFixed(1)} kg` : "一次如厕"}</Text><Text className="role">{formatDateTime(record.occurredAt)}</Text></View>{mine && <View className="record-actions"><Button onClick={() => beginEditRecord(record)}>编辑</Button><Button className="danger-mini" onClick={() => confirmDeleteRecord(record)}>删除</Button></View>}</View>; })}</View> : <View className="empty">还没有记录。</View>}</View>
           </>}
 
-          {activeTab === "together" && <TogetherPanel viewer={viewer} partner={partner} onOpenAnniversaries={() => setActiveTab("anniversaries")} />}
+          {activeTab === "together" && <TogetherPanel viewer={viewer} partner={partner} onOpenAnniversaries={() => setActiveTab("anniversaries")} onOpenGames={() => setActiveTab("games")} />}
+
+          {activeTab === "games" && <GamesPanel viewer={viewer} partner={partner} />}
 
           {activeTab === "notebook" && <NotebookPanel viewer={viewer} partner={partner} onChanged={() => { void bootstrap(true); }} />}
 
@@ -911,7 +914,7 @@ export default function IndexPage() {
           const active = key === "farm"
             ? ["farm", "trends"].includes(activeTab)
             : key === "together"
-              ? ["together", "notebook", "anniversaries"].includes(activeTab)
+              ? ["together", "notebook", "anniversaries", "games"].includes(activeTab)
               : key === "us"
                 ? ["us", "inbox"].includes(activeTab)
                 : activeTab === key;

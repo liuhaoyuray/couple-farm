@@ -286,7 +286,7 @@ export default function VillagePanel({ viewer, couple }: { viewer: Viewer; coupl
     return (
       <>
         <View className="page-heading community-heading">
-          <Text className="kicker">我们俩的小田地 · 0.8.0</Text>
+          <Text className="kicker">我们俩的小田地 · 0.9.0</Text>
           <Text className="title">和认识的情侣住进同一个村</Text>
           <Text className="description">村庄不是公开广场。只有拿到邀请码的情侣才能加入、看动态和留言，体重与如厕记录永远不会进入村庄。</Text>
         </View>

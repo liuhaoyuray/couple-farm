@@ -81,6 +81,8 @@ jobs:
           printf '%s\n' "$village_result" | node scripts/verify-cloudbase-health.cjs village
           notification_result="$(tcb fn invoke couple-tracker --data '{"action":"notification-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
           printf '%s\n' "$notification_result" | node scripts/verify-cloudbase-health.cjs notifications
+          game_result="$(tcb fn invoke couple-tracker --data '{"action":"game-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
+          printf '%s\n' "$game_result" | node scripts/verify-cloudbase-health.cjs games
           safety_result="$(tcb fn invoke couple-tracker --data '{"action":"content-safety-health"}' --env-id "$TCB_ENV_ID" --json --yes)"
           printf '%s\n' "$safety_result" | node scripts/verify-cloudbase-health.cjs content-safety
 
