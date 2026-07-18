@@ -2324,13 +2324,18 @@ async function updateGameWithRevision(id, revision, fields) {
   if (!Number.isInteger(expectedRevision) || !Number.isInteger(nextRevision) || nextRevision <= expectedRevision) {
     throw new Error("GAME_REVISION_INVALID");
   }
-  // CloudBase's production runtime rejected the previous collection-query update
-  // used by 0.10.0. Game documents now use the same proven doc.update path as the
-  // rest of the app, with a second read immediately before the write to retain
-  // stale-board protection and idempotent client action IDs.
+  // CloudBase's production doc.update flattens nested objects into dotted paths.
+  // A first move therefore tried to write `lastMove.at` while `lastMove` was null
+  // and failed with "Cannot create field ... in element {lastMove: null}". Merge
+  // the latest server copy and replace the whole document so lastMove, score and
+  // RPS choices are stored as complete objects instead of partial dotted updates.
+  // The revision reread retains stale-board protection; client action IDs make a
+  // retried request idempotent.
   const current = await getDocument("couple_games", id);
   if (!current || Number(current.revision) !== expectedRevision) return null;
-  return updateDocument("couple_games", id, fields);
+  const currentFields = { ...current };
+  delete currentFields.id;
+  return setDocument("couple_games", id, { ...currentFields, ...fields });
 }
 
 async function verifyGameStorageWrite() {
